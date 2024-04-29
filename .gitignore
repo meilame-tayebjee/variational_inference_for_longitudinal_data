@@ -9,3 +9,4 @@ benchmark_VAE/docs
 __pycache__
 *.pdf
 *.json
+lib/plots/to_gif/.DS_Store
