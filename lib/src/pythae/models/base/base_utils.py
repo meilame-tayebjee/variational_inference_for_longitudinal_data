@@ -4,7 +4,7 @@ import logging
 from collections import OrderedDict
 from typing import Any, Tuple
 
-import pickle5 as pickle
+import pickle
 import torch
 
 logger = logging.getLogger(__name__)
