@@ -504,24 +504,24 @@ class BaseAE(nn.Module):
 
     def set_encoder(self, encoder: BaseEncoder) -> None:
         """Set the encoder of the model"""
-        if not issubclass(type(encoder), BaseEncoder):
-            raise BadInheritanceError(
-                (
-                    "Encoder must inherit from BaseEncoder class from "
-                    "pythae.models.base_architectures.BaseEncoder. Refer to documentation."
-                )
-            )
+        # if not issubclass(type(encoder), BaseEncoder):
+        #     raise BadInheritanceError(
+        #         (
+        #             "Encoder must inherit from BaseEncoder class from "
+        #             "pythae.models.base_architectures.BaseEncoder. Refer to documentation."
+        #         )
+        #     )
         self.encoder = encoder
 
     def set_decoder(self, decoder: BaseDecoder) -> None:
         """Set the decoder of the model"""
-        if not issubclass(type(decoder), BaseDecoder):
-            raise BadInheritanceError(
-                (
-                    "Decoder must inherit from BaseDecoder class from "
-                    "pythae.models.base_architectures.BaseDecoder. Refer to documentation."
-                )
-            )
+        # if not issubclass(type(decoder), BaseDecoder):
+        #     raise BadInheritanceError(
+        #         (
+        #             "Decoder must inherit from BaseDecoder class from "
+        #             "pythae.models.base_architectures.BaseDecoder. Refer to documentation."
+        #         )
+        #     )
         self.decoder = decoder
 
     @classmethod

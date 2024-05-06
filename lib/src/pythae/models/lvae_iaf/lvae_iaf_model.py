@@ -499,7 +499,7 @@ class LVAE_IAF(VAE):
 
         #t = torch.linspace(0, 1, self.n_obs).repeat(z.shape[0], 1).to(z.device)
         #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(z.shape[0], -1, self.latent_dim)), dim=-1)
-        return self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim)#, torch.arange(0, self.n_obs).to(z.device).repeat(z.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim)
+        return self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim), z_seq #, torch.arange(0, self.n_obs).to(z.device).repeat(z.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim)
 
     def infer_missing(self, x, seq_mask, pix_mask):
         # iterate on seen images in sequence and keep the one maximizing p(x_i^obs|z)

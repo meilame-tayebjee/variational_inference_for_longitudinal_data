@@ -39,7 +39,8 @@ class VAE(BaseAE):
         self,
         model_config: VAEConfig,
         encoder: Optional[BaseEncoder] = None,
-        decoder: Optional[BaseDecoder] = None,
+        #decoder: Optional[BaseDecoder] = None,
+        decoder: Optional = None,
     ):
 
         BaseAE.__init__(self, model_config=model_config, decoder=decoder)
