@@ -61,7 +61,6 @@ class UNetModel(nn.Module):
         levels = len(channel_multipliers)
         # Size time embeddings
         d_time_emb = channels * 4
-        print("d_time_emb", d_time_emb)
         self.time_embed = nn.Sequential(
             nn.Linear(channels, d_time_emb),
             nn.SiLU(),
@@ -82,10 +81,8 @@ class UNetModel(nn.Module):
         input_block_channels = [channels]
         # Number of channels at each level
         channels_list = [channels * m for m in channel_multipliers]
-        print("Channels list", channels_list)
         # Prepare levels
         for i in range(levels):
-            print(i)
             # Add the residual blocks and attentions
             for _ in range(n_res_blocks):
                 # Residual block maps from previous number of channels to the number of
@@ -158,7 +155,7 @@ class UNetModel(nn.Module):
         # $\frac{t}{10000^{\frac{2i}{c}}}$
         args = time_steps[:, None].float() * frequencies[None]
         # $\cos\Bigg(\frac{t}{10000^{\frac{2i}{c}}}\Bigg)$ and $\sin\Bigg(\frac{t}{10000^{\frac{2i}{c}}}\Bigg)$
-        return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        return torch.cat([torch.cos(args), torch.sin(args)], dim=-1) #taille d_time_emb = channels * 4
 
     def forward(self, x: torch.Tensor, time_steps: torch.Tensor, cond: torch.Tensor):
         """
@@ -177,11 +174,11 @@ class UNetModel(nn.Module):
         for module in self.input_blocks:
             x = module(x, t_emb, cond)
             x_input_block.append(x)
-            print(x.shape)
+            # print(x.shape)
         # Middle of the U-Net
-        print("Entering middle block ", x.shape)
+        # print("Entering middle block ", x.shape)
         x = self.middle_block(x, t_emb, cond)
-        print("Middle block done ", x.shape)
+        #print("Middle block done ", x.shape)
         # Output half of the U-Net
         for module in self.output_blocks:
             x = torch.cat([x, x_input_block.pop()], dim=1)

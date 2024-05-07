@@ -111,6 +111,7 @@ class LVAE_IAF(VAE):
         """
 
         x = inputs["data"]
+        x = x.unsqueeze(0) if len(x.shape) == 4 else x
         seq_mask = inputs['seq_mask']
         pix_mask = inputs['pix_mask']
         epoch = kwargs.pop("epoch", 100)
@@ -171,17 +172,16 @@ class LVAE_IAF(VAE):
         else:
 
             # if missing data pick randomly index of non missing data
+            seq_mask = seq_mask.reshape(-1, self.n_obs)
             if seq_mask[0].sum() < self.n_obs:
                 probs = seq_mask[0].cpu().numpy()
                 probs /= probs.sum()
-
                 vi_index = np.random.choice(np.arange(self.n_obs), p=probs.reshape(-1))
 
             else:
                 vi_index = np.random.randint(self.n_obs)
-
+            
             encoder_output = self.encoder(x[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
-
             mu, log_var = encoder_output.embedding, encoder_output.log_covariance
             h = None#encoder_output.context
 

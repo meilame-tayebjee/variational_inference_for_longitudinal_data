@@ -55,7 +55,7 @@ class SpatialTransformer(nn.Module):
         :param cond: is the conditional embeddings of shape `[batch_size,  n_cond, d_cond]`
         """
         # Get shape `[batch_size, channels, height, width]`
-        print("Shap entering the trans: ", x.shape)
+        #print("Shape entering the transformer: ", x.shape)
         b, c, h, w = x.shape
         # For residual connection
         x_in = x
