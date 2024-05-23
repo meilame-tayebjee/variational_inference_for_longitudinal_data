@@ -81,7 +81,7 @@ class VAE(BaseAE):
         seq_mask = inputs['seq_mask']
         pix_mask = inputs['pix_mask']
         epoch = kwargs.pop("epoch", 100)
-        x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        #x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
         encoder_output = self.encoder(x)
 
@@ -90,10 +90,10 @@ class VAE(BaseAE):
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
         recon_x = self.decoder(z)["reconstruction"]
-
         loss, recon_loss, kld = self.loss_function(
             recon_x=recon_x,
-            x=x.reshape((x.shape[0]*x.shape[1],) + x.shape[2:]),
+            #x=x.reshape((x.shape[0]*x.shape[1],) + x.shape[2:]),
+            x = x,
             mu=mu,
             log_var=log_var,
             z=z,
@@ -114,7 +114,6 @@ class VAE(BaseAE):
     def loss_function(self, recon_x, x, mu, log_var, z, seq_mask=None, pix_mask=None):
 
         if self.model_config.reconstruction_loss == "mse":
-
             recon_loss = 0.5 * (
                 F.mse_loss(
                     recon_x.reshape(x.shape[0], -1),

@@ -8,6 +8,7 @@ from ..customexception import DatasetError
 from ..data.preprocessors import BaseDataset, DataProcessor
 from ..models import BaseAE
 from ..trainers import *
+
 from ..trainers.training_callbacks import TrainingCallback
 from .base_pipeline import Pipeline
 
@@ -189,37 +190,37 @@ class TrainingPipeline(Pipeline):
         else:
             eval_dataset = None
 
-        if isinstance(self.training_config, CoupledOptimizerTrainerConfig):
-            logger.info("Using Coupled Optimizer Trainer\n")
-            trainer = CoupledOptimizerTrainer(
-                model=self.model,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                training_config=self.training_config,
-                callbacks=callbacks,
-            )
+        # if isinstance(self.training_config, CoupledOptimizerTrainerConfig):
+        #     logger.info("Using Coupled Optimizer Trainer\n")
+        #     trainer = CoupledOptimizerTrainer(
+        #         model=self.model,
+        #         train_dataset=train_dataset,
+        #         eval_dataset=eval_dataset,
+        #         training_config=self.training_config,
+        #         callbacks=callbacks,
+        #     )
 
-        elif isinstance(self.training_config, AdversarialTrainerConfig):
-            logger.info("Using Adversarial Trainer\n")
-            trainer = AdversarialTrainer(
-                model=self.model,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                training_config=self.training_config,
-                callbacks=callbacks,
-            )
+        # elif isinstance(self.training_config, AdversarialTrainerConfig):
+        #     logger.info("Using Adversarial Trainer\n")
+        #     trainer = AdversarialTrainer(
+        #         model=self.model,
+        #         train_dataset=train_dataset,
+        #         eval_dataset=eval_dataset,
+        #         training_config=self.training_config,
+        #         callbacks=callbacks,
+        #     )
 
-        elif isinstance(self.training_config, CoupledOptimizerAdversarialTrainerConfig):
-            logger.info("Using Coupled Optimizer Adversarial Trainer\n")
-            trainer = CoupledOptimizerAdversarialTrainer(
-                model=self.model,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                training_config=self.training_config,
-                callbacks=callbacks,
-            )
+        # elif isinstance(self.training_config, CoupledOptimizerAdversarialTrainerConfig):
+        #     logger.info("Using Coupled Optimizer Adversarial Trainer\n")
+        #     trainer = CoupledOptimizerAdversarialTrainer(
+        #         model=self.model,
+        #         train_dataset=train_dataset,
+        #         eval_dataset=eval_dataset,
+        #         training_config=self.training_config,
+        #         callbacks=callbacks,
+        #     )
 
-        elif isinstance(self.training_config, BaseTrainerConfig):
+        if isinstance(self.training_config, BaseTrainerConfig):
             logger.info("Using Base Trainer\n")
             trainer = BaseTrainer(
                 model=self.model,

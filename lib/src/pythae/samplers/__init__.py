@@ -21,7 +21,7 @@ from .base import BaseSampler, BaseSamplerConfig
 # from .iaf_sampler import IAFSampler, IAFSamplerConfig
 # from .maf_sampler import MAFSampler, MAFSamplerConfig
 # from .manifold_sampler import RHVAESampler, RHVAESamplerConfig
-# from .normal_sampling import NormalSampler, NormalSamplerConfig
+from .normal_sampling import NormalSampler, NormalSamplerConfig
 # from .pixelcnn_sampler import PixelCNNSampler, PixelCNNSamplerConfig
 # from .pvae_sampler import PoincareDiskSampler, PoincareDiskSamplerConfig
 # from .two_stage_vae_sampler import TwoStageVAESampler, TwoStageVAESamplerConfig

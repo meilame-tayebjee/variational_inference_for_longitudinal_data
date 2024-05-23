@@ -5,7 +5,10 @@ import numpy as np
 import torch
 
 from ..models import BaseAE
-from ..samplers import *
+from ..samplers.normal_sampling import *
+from ..samplers.base import *
+from ..samplers.vamp_sampler import *
+#from ..samplers import *
 from ..trainers import BaseTrainerConfig
 from .base_pipeline import Pipeline
 
