@@ -70,7 +70,7 @@ class LatentDiffusion(nn.Module):
                  linear_start: float,
                  linear_end: float,
                  ):
-        """
+        r"""
         :param unet_model: is the [U-Net](model/unet.html) that predicts noise
          $\epsilon_\text{cond}(x_t, c)$, in latent space
         :param autoencoder: is the [AutoEncoder](model/autoencoder.html)
@@ -134,7 +134,7 @@ class LatentDiffusion(nn.Module):
         return self.first_stage_model.decode(z / self.latent_scaling_factor)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, context: torch.Tensor):
-        """
+        r"""
         ### Predict noise
 
         Predict noise given the latent representation $x_t$, time step $t$, and the
@@ -143,3 +143,121 @@ class LatentDiffusion(nn.Module):
         $$\epsilon_\text{cond}(x_t, c)$$
         """
         return self.model(x, t, context)
+    
+
+class MyLatentDiffusion(nn.Module):
+    """
+    ## Latent diffusion model
+
+    This contains following components:
+
+    * [AutoEncoder](model/autoencoder.html)
+    * [U-Net](model/unet.html) with [attention](model/unet_attention.html)
+    * [CLIP embeddings generator](model/clip_embedder.html)
+    """
+    model: DiffusionWrapper
+    first_stage_model: Autoencoder
+
+    def __init__(self,
+                 unet_model: UNetModel,
+                 autoencoder,
+                 latent_scaling_factor: float,
+                 n_steps: int,
+                 linear_start: float,
+                 linear_end: float,
+                 ):
+        r"""
+        :param unet_model: is the [U-Net](model/unet.html) that predicts noise
+         $\epsilon_\text{cond}(x_t, c)$, in latent space
+        :param autoencoder: is the [AutoEncoder](model/autoencoder.html)
+        :param clip_embedder: is the [CLIP embeddings generator](model/clip_embedder.html)
+        :param latent_scaling_factor: is the scaling factor for the latent space. The encodings of
+         the autoencoder are scaled by this before feeding into the U-Net.
+        :param n_steps: is the number of diffusion steps $T$.
+        :param linear_start: is the start of the $\beta$ schedule.
+        :param linear_end: is the end of the $\beta$ schedule.
+        """
+        super().__init__()
+        # Wrap the [U-Net](model/unet.html) to keep the same model structure as
+        # [CompVis/stable-diffusion](https://github.com/CompVis/stable-diffusion).
+        self.model = DiffusionWrapper(unet_model)
+        # Auto-encoder and scaling factor
+        self.first_stage_model = autoencoder
+        self.latent_scaling_factor = latent_scaling_factor
+
+        # Number of steps $T$
+        self.n_steps = n_steps
+
+        # $\beta$ schedule
+        beta = torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_steps, dtype=torch.float64) ** 2
+        self.beta = nn.Parameter(beta.to(torch.float32), requires_grad=False)
+        # $\alpha_t = 1 - \beta_t$
+        alpha = 1. - beta
+        # $\bar\alpha_t = \prod_{s=1}^t \alpha_s$
+        alpha_bar = torch.cumprod(alpha, dim=0)
+        self.alpha_bar = nn.Parameter(alpha_bar.to(torch.float32), requires_grad=False)
+        self.sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
+
+    @property
+    def device(self):
+        """
+        ### Get model device
+        """
+        return next(iter(self.model.parameters())).device
+
+
+    def autoencoder_encode(self, image: torch.Tensor):
+        """
+        ### Get scaled latent space representation of the image
+
+        The encoder output is a distribution.
+        We sample from that and multiply by the scaling factor.
+        """
+        return self.latent_scaling_factor * self.first_stage_model.encoder(image).embedding
+
+    def autoencoder_decode(self, z: torch.Tensor):
+        """
+        ### Get image from the latent representation
+
+        We scale down by the scaling factor and then decode.
+        """
+        return self.first_stage_model.decode(z / self.latent_scaling_factor)
+    
+    def add_noise(self, original, noise, t):
+        r"""
+        Forward method for diffusion
+        :param original: Image on which noise is to be applied
+        :param noise: Random Noise Tensor (from normal dist)
+        :param t: timestep of the forward process of shape -> (B,)
+        :return:
+        """
+        original_shape = original.shape
+        batch_size = original_shape[0]
+        
+        sqrt_alpha_cum_prod = self.sqrt_alpha_bar.to(original.device)[t].reshape(batch_size)
+        sqrt_one_minus_alpha_cum_prod = self.sqrt_one_minus_alpha_bar.to(original.device)[t].reshape(batch_size)
+        
+        # Reshape till (B,) becomes (B,1,1,1) if image is (B,C,H,W)
+        for _ in range(len(original_shape) - 1):
+            sqrt_alpha_cum_prod = sqrt_alpha_cum_prod.unsqueeze(-1)
+        for _ in range(len(original_shape) - 1):
+            sqrt_one_minus_alpha_cum_prod = sqrt_one_minus_alpha_cum_prod.unsqueeze(-1)
+        
+        # Apply and Return Forward process equation
+        return (sqrt_alpha_cum_prod.to(original.device) * original
+                + sqrt_one_minus_alpha_cum_prod.to(original.device) * noise)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor, context: torch.Tensor = None):
+        r"""
+        ### Predict noise
+
+        Predict noise given the latent representation $x_t$, time step $t$, and the
+        conditioning context $c$.
+
+        $$\epsilon_\text{cond}(x_t, c)$$
+        """
+        return self.model(x, t, context)
+    
+
+
