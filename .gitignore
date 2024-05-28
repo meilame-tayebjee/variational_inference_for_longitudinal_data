@@ -16,3 +16,5 @@ lib/my_data/MNIST/
 .DS_Store
 lib/animation.gif
 pre-trained_vae/
+ldm/
+lightning_logs/

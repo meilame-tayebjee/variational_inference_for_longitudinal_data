@@ -222,7 +222,7 @@ class MyLatentDiffusion(nn.Module):
 
         We scale down by the scaling factor and then decode.
         """
-        return self.first_stage_model.decode(z / self.latent_scaling_factor)
+        return self.first_stage_model.decoder(z / self.latent_scaling_factor).reconstruction
     
     def add_noise(self, original, noise, t):
         r"""
