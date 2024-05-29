@@ -131,6 +131,8 @@ class DDIMSampler(DiffusionSampler):
         # Time steps to sample at $\tau_{S - i'}, \tau_{S - i' - 1}, \dots, \tau_1$
         time_steps = np.flip(self.time_steps)[skip_steps:]
 
+        all_x = []
+        all_pred_x0 = []
         for i, step in monit.enum('Sample', time_steps):
             # Index $i$ in the list $[\tau_1, \tau_2, \dots, \tau_S]$
             index = len(time_steps) - i - 1
@@ -143,9 +145,13 @@ class DDIMSampler(DiffusionSampler):
                                             temperature=temperature,
                                             uncond_scale=uncond_scale,
                                             uncond_cond=uncond_cond)
+            all_x.append(x)
+            all_pred_x0.append(pred_x0)
 
         # Return $x_0$
-        return x
+        all_x = torch.stack(all_x)
+        all_pred_x0 = torch.stack(all_pred_x0)
+        return x, all_x, all_pred_x0
 
     @torch.no_grad()
     def p_sample(self, x: torch.Tensor, c: torch.Tensor, t: torch.Tensor, step: int, index: int, *,

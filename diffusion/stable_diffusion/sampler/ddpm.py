@@ -24,7 +24,7 @@ from labml_nn.diffusion.stable_diffusion.sampler import DiffusionSampler
 
 
 class DDPMSampler(DiffusionSampler):
-    """
+    r"""
     ## DDPM Sampler
 
     This extends the [`DiffusionSampler` base class](index.html).
@@ -49,7 +49,7 @@ class DDPMSampler(DiffusionSampler):
     model: LatentDiffusion
 
     def __init__(self, model: LatentDiffusion):
-        """
+        r"""
         :param model: is the model to predict noise $\epsilon_\text{cond}(x_t, c)$
         """
         super().__init__(model)
@@ -83,6 +83,10 @@ class DDPMSampler(DiffusionSampler):
             # $\frac{\sqrt{\alpha_t}(1 - \bar\alpha_{t-1})}{1-\bar\alpha_t}$
             self.mean_xt_coef = (1. - alpha_bar_prev) * ((1 - beta) ** 0.5) / (1. - alpha_bar)
 
+
+            self.eps_coef = beta / ((1. - alpha_bar) ** .5)
+            self.beta = beta
+
     @torch.no_grad()
     def sample(self,
                shape: List[int],
@@ -93,8 +97,9 @@ class DDPMSampler(DiffusionSampler):
                uncond_scale: float = 1.,
                uncond_cond: Optional[torch.Tensor] = None,
                skip_steps: int = 0,
+               selected_time_steps = None
                ):
-        """
+        r"""
         ### Sampling Loop
 
         :param shape: is the shape of the generated images in the
@@ -120,6 +125,8 @@ class DDPMSampler(DiffusionSampler):
         time_steps = np.flip(self.time_steps)[skip_steps:]
 
         # Sampling loop
+        all_x = []
+        all_pred_x0 = []
         for step in monit.iterate('Sample', time_steps):
             # Time step $t$
             ts = x.new_full((bs,), step, dtype=torch.long)
@@ -131,15 +138,24 @@ class DDPMSampler(DiffusionSampler):
                                             uncond_scale=uncond_scale,
                                             uncond_cond=uncond_cond)
 
+            if selected_time_steps is not None:
+                if step in selected_time_steps:
+                    all_x.append(x)
+                    all_pred_x0.append(pred_x0)
+
+
         # Return $x_0$
-        return x
+        if selected_time_steps is not None:
+            all_x = torch.stack(all_x)
+            all_pred_x0 = torch.stack(all_pred_x0)
+        return x, all_x, all_pred_x0
 
     @torch.no_grad()
     def p_sample(self, x: torch.Tensor, c: torch.Tensor, t: torch.Tensor, step: int,
                  repeat_noise: bool = False,
                  temperature: float = 1.,
                  uncond_scale: float = 1., uncond_cond: Optional[torch.Tensor] = None):
-        """
+        r"""
         ### Sample $x_{t-1}$ from $p_\theta(x_{t-1} | x_t)$
 
         :param x: is $x_t$ of shape `[batch_size, channels, height, width]`
@@ -152,7 +168,7 @@ class DDPMSampler(DiffusionSampler):
             $\epsilon_\theta(x_t, c) = s\epsilon_\text{cond}(x_t, c) + (s - 1)\epsilon_\text{cond}(x_t, c_u)$
         :param uncond_cond: is the conditional embedding for empty prompt $c_u$
         """
-
+        device = self.model.device
         # Get $\epsilon_\theta$
         e_t = self.get_eps(x, t, c,
                            uncond_scale=uncond_scale,
@@ -198,6 +214,9 @@ class DDPMSampler(DiffusionSampler):
         # Multiply noise by the temperature
         noise = noise * temperature
 
+
+        #mean_check = (x - self.eps_coef[step] * e_t) / ((1- self.beta[step])**.5)
+
         # Sample from,
         #
         # $$p_\theta(x_{t-1} | x_t) = \mathcal{N}\big(x_{t-1}; \mu_\theta(x_t, t), \tilde\beta_t \mathbf{I} \big)$$
@@ -208,7 +227,7 @@ class DDPMSampler(DiffusionSampler):
 
     @torch.no_grad()
     def q_sample(self, x0: torch.Tensor, index: int, noise: Optional[torch.Tensor] = None):
-        """
+        r"""
         ### Sample from $q(x_t|x_0)$
 
         $$q(x_t|x_0) = \mathcal{N} \Big(x_t; \sqrt{\bar\alpha_t} x_0, (1-\bar\alpha_t) \mathbf{I} \Big)$$
