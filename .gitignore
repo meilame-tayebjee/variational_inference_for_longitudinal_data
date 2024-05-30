@@ -18,3 +18,5 @@ lib/animation.gif
 pre-trained_vae/
 ldm/
 lightning_logs/
+sprites/
+pre-trained_LDM/
