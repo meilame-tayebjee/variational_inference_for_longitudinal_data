@@ -25,6 +25,7 @@ from typing import List
 
 import torch
 import torch.nn as nn
+import lightning as L
 
 from model.autoencoder import Autoencoder
 from model.clip_embedder import CLIPTextEmbedder
@@ -271,4 +272,53 @@ class MyLatentDiffusion(nn.Module):
         return self.model(x, t, context)
     
 
+class LitLDM(L.LightningModule):
+    def __init__(self, ldm, lr = 1e-3):
+        super().__init__()
+        self.ldm = ldm
+        self.lr = lr
 
+    def training_step(self, batch, batch_idx):
+        # training_step defines the train loop.
+        x = batch
+        batch_size = x.shape[0]
+        z = vae.encoder(x).embedding.reshape(-1, 3, 8, 8)
+        noise = torch.randn_like(z)
+
+        t = torch.randint(0, self.ldm.n_steps, (z.shape[0],)).to(z.device)
+
+        noisy_z = self.ldm.add_noise(z, noise, t).float()
+
+        noise_pred = self.ldm(noisy_z, t).reshape(batch_size, 3*8*8)
+        noise = noise.reshape(batch_size, 3*8*8)
+
+        #z_pred = (noisy_z - (1- self.ldm.alpha_bar[t].reshape(batch_size, 1, 1, 1)) ** 0.5 * noise_pred) / (self.ldm.alpha_bar[t].reshape(batch_size, 1, 1, 1) ** 0.5)
+
+        loss = ((noise_pred - noise)**2).sum(axis=1).mean()
+
+        self.log("train_loss", loss, prog_bar=True)
+
+
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        x = batch
+        batch_size = x.shape[0]
+        z = vae.encoder(x).embedding.reshape(-1, 3, 8, 8)
+        noise = torch.randn_like(z)
+
+        t = torch.randint(0, self.ldm.n_steps, (batch_size,)).to(z.device)
+        noisy_z = self.ldm.add_noise(z, noise, t).float()
+
+        noise_pred = self.ldm(noisy_z, t).reshape(batch_size, 3*8*8)
+        noise = noise.reshape(batch_size, 3*8*8)
+
+        val_loss = ((noise_pred - noise)**2).sum(axis=1).mean()
+
+        self.log("val_loss", val_loss, prog_bar = True)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, factor=0.8)
+
+        return {'optimizer':optimizer, 'lr_scheduler':scheduler, 'monitor':'train_loss'}
