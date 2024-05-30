@@ -247,6 +247,17 @@ class MyLatentDiffusion(nn.Module):
         # Apply and Return Forward process equation
         return (sqrt_alpha_cum_prod.to(original.device) * original
                 + sqrt_one_minus_alpha_cum_prod.to(original.device) * noise)
+    
+    def sequential_diffusion(self, x, t1, t2, noise):
+        shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0]) / self.sqrt_alpha_bar.to(x.device)[t1].reshape(x.shape[0])
+        shrink_sqrt_one_minus_cum_prod = 1 - shrink_sqrt_cum_prod
+
+        for _ in range(len(x.shape) - 1):
+            shrink_sqrt_cum_prod = shrink_sqrt_cum_prod.unsqueeze(-1)
+            shrink_sqrt_one_minus_cum_prod = shrink_sqrt_one_minus_cum_prod.unsqueeze(-1)
+        
+        return (shrink_sqrt_cum_prod * x + shrink_sqrt_one_minus_cum_prod * noise)
+
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, context: torch.Tensor = None):
         r"""

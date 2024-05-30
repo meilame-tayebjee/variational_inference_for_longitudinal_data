@@ -9,15 +9,17 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
         log_var = log_var[idx]
 
     with torch.no_grad():
-        model.M_i = torch.diag_embed((-log_var).exp()).detach()
-        model.M_i_flat = (-log_var).exp().detach()
-        model.M_i_inverse_flat = (log_var).exp().detach()
-        model.centroids = mu.detach()
+        model.M_i = torch.diag_embed((-log_var).exp()).detach().to(device)
+        model.M_i_flat = (-log_var).exp().detach().to(device)
+        model.M_i_inverse_flat = (log_var).exp().detach().to(device)
+        model.centroids = mu.detach().to(device)
         model.T = T
         model.lbd = lbd
 
+        print(model.device)
 
         def G_sampl(z):
+            z = z.to(device)
             omega = (
                 -(
                     torch.transpose(
@@ -54,7 +56,7 @@ def log_pi(model, z):
 def hmc_sampling(model, mu, n_samples=1, mcmc_steps_nbr=1000, n_lf=10, eps_lf=0.01):
 
     acc_nbr = torch.zeros(n_samples, 1).to(device)
-    path = torch.zeros(n_samples, mcmc_steps_nbr, model.latent_dim)
+    path = torch.zeros(n_samples, mcmc_steps_nbr, model.latent_dim).to(device)
     with torch.no_grad():
 
         idx = torch.randint(0, len(mu), (n_samples,))
