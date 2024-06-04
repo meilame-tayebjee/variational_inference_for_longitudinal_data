@@ -219,7 +219,7 @@ class VAE(BaseAE):
         return np.mean(log_p)
     
     def build_metrics(self, mu, log_var, idx=None, T=0.3, lbd=0.0001):
-
+        device = mu.device
         if idx is not None:
             mu = mu[idx]
             log_var = log_var[idx]
@@ -232,14 +232,16 @@ class VAE(BaseAE):
             self.T = T
             self.lbd = lbd
 
-            device = self.device
+            
 
             def G_sampl(z):
                 z = z.to(device)
                 omega = (
                     -(
                         torch.transpose(
-                                    (self.centroids.unsqueeze(0) - z.unsqueeze(1)).unsqueeze(-1), 2, 3) @ torch.diag_embed(model.M_i_flat).unsqueeze(0) @ (model.centroids.unsqueeze(0) -                                      z.unsqueeze(1)).unsqueeze(-1)
+                                    (self.centroids.unsqueeze(0) - z.unsqueeze(1)).unsqueeze(-1), 2, 3) 
+                                    @ torch.diag_embed(self.M_i_flat).unsqueeze(0) 
+                                    @ (self.centroids.unsqueeze(0) -z.unsqueeze(1)).unsqueeze(-1)
                                 ) / self.T**2
                     ).exp()
 
@@ -251,7 +253,7 @@ class VAE(BaseAE):
         #return model
 
 
-    def retrieveG(self, train_data, verbose = False, device = 'cpu'):
+    def retrieveG(self, train_data, verbose = False, device = 'cuda'):
         last_obs_train = train_data[:, -1, :, :, :].to(device)
         loader = torch.utils.data.DataLoader(last_obs_train, batch_size=200, shuffle=False)
         mu = []
@@ -274,7 +276,6 @@ class VAE(BaseAE):
 
         if verbose:
             print('Running Kmedoids')
-            print(mu.shape)
 
         kmedoids = KMedoids(n_clusters=100).fit(mu.detach().cpu().numpy())
         medoids = torch.tensor(kmedoids.cluster_centers_).to(device)
@@ -302,3 +303,6 @@ class VAE(BaseAE):
         self.build_metrics(mu, log_var, centroids_idx, T=T, lbd=lbd)
 
         return self.G_sampl, log_var
+    
+    def log_pi(self, z):
+        return 0.5 * (torch.clamp(self.G_sampl(z).det(), 0, 1e10)).log()

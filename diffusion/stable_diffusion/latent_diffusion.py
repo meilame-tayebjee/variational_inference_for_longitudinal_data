@@ -161,8 +161,8 @@ class MyLatentDiffusion(nn.Module):
 
     def __init__(self,
                  unet_model: UNetModel,
-                 autoencoder,
                  latent_scaling_factor: float,
+                 latent_dim: int,
                  n_steps: int,
                  linear_start: float,
                  linear_end: float,
@@ -184,7 +184,6 @@ class MyLatentDiffusion(nn.Module):
         # [CompVis/stable-diffusion](https://github.com/CompVis/stable-diffusion).
         self.model = DiffusionWrapper(unet_model)
         # Auto-encoder and scaling factor
-        self.first_stage_model = autoencoder
         self.latent_scaling_factor = latent_scaling_factor
 
         # Number of steps $T$
@@ -202,7 +201,7 @@ class MyLatentDiffusion(nn.Module):
         self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
 
 
-        self.latent_dim = self.first_stage_model.latent_dim
+        self.latent_dim = latent_dim
         self.c = channels
         self.h, self.w  = int((self.latent_dim // 3)**0.5), int((self.latent_dim // 3)**0.5)
 
@@ -214,24 +213,6 @@ class MyLatentDiffusion(nn.Module):
         ### Get model device
         """
         return next(iter(self.model.parameters())).device
-
-
-    def autoencoder_encode(self, image: torch.Tensor):
-        """
-        ### Get scaled latent space representation of the image
-
-        The encoder output is a distribution.
-        We sample from that and multiply by the scaling factor.
-        """
-        return self.latent_scaling_factor * self.first_stage_model.encoder(image).embedding
-
-    def autoencoder_decode(self, z: torch.Tensor):
-        """
-        ### Get image from the latent representation
-
-        We scale down by the scaling factor and then decode.
-        """
-        return self.first_stage_model.decoder(z / self.latent_scaling_factor).reconstruction
     
     def add_noise(self, original, noise, t):
         r"""
@@ -254,18 +235,17 @@ class MyLatentDiffusion(nn.Module):
         for _ in range(len(original_shape) - 1):
             sqrt_one_minus_alpha_cum_prod = sqrt_one_minus_alpha_cum_prod.unsqueeze(-1)
         # Apply and Return Forward process equation
-        print("coeff x ldm ", sqrt_alpha_cum_prod)
-        print("coeff noise ldm ", sqrt_one_minus_alpha_cum_prod)
         return (sqrt_alpha_cum_prod.to(original.device) * original
                 + sqrt_one_minus_alpha_cum_prod.to(original.device) * noise)
     
     def sequential_diffusion(self, x, t1, t2, noise = None):
 
-
-        if t1 == 0:
-            shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0])
-        else:    
-            shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0]) / self.sqrt_alpha_bar.to(x.device)[t1 - 1].reshape(x.shape[0])
+        tricky_idxes = t1 == 0
+        t1[tricky_idxes] = 1 # A CORRIGER
+        # if t1 == 0:
+        #     shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0])
+        # else:    
+        shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0]) / self.sqrt_alpha_bar.to(x.device)[t1 - 1].reshape(x.shape[0])
         
         
         shrink_sqrt_one_minus_cum_prod = torch.sqrt( 1 - shrink_sqrt_cum_prod**2 )
@@ -277,13 +257,11 @@ class MyLatentDiffusion(nn.Module):
         for _ in range(len(x.shape) - 1):
             shrink_sqrt_cum_prod = shrink_sqrt_cum_prod.unsqueeze(-1)
             shrink_sqrt_one_minus_cum_prod = shrink_sqrt_one_minus_cum_prod.unsqueeze(-1)
-        
-        print("coeff x ", shrink_sqrt_cum_prod)
-        print("coeff noise ", shrink_sqrt_one_minus_cum_prod)
+
         return (shrink_sqrt_cum_prod * x + shrink_sqrt_one_minus_cum_prod * noise)
 
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, context: torch.Tensor = None):
+    def forward(self, x: torch.Tensor, t: torch.Tensor, context: torch.Tensor = None, **kwargs):
         r"""
         ### Predict noise
 
@@ -310,8 +288,9 @@ class LitLDM(L.LightningModule):
 
         for param in self.vae.parameters():
             param.requires_grad = False
+        self.model_config = None
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx, **kwargs):
         # training_step defines the train loop.
         x = batch
         batch_size = x.shape[0]
@@ -334,7 +313,7 @@ class LitLDM(L.LightningModule):
 
         return loss
     
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, **kwargs):
         x = batch
         batch_size = x.shape[0]
         z = self.vae.encoder(x).embedding.reshape(-1, self.c, self.h, self.w)

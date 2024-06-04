@@ -778,37 +778,20 @@ class LVAE_IAF(VAE):
 
 
 class LLDM_IAF(VAE):
-    """Longitudinal Variational Auto Encoder with Inverse Autoregressive Flows
-    (:class:`~pythae.models.normalizing_flows.IAF`).
-
-    Args:
-        model_config(VAE_IAF_Config): The Variational Autoencoder configuration seting the main
-            parameters of the model.
-
-        encoder (BaseEncoder): An instance of BaseEncoder (inheriting from `torch.nn.Module` which
-            plays the role of encoder. This argument allows you to use your own neural networks
-            architectures if desired. If None is provided, a simple Multi Layer Preception
-            (https://en.wikipedia.org/wiki/Multilayer_perceptron) is used. Default: None.
-
-        decoder (BaseDecoder): An instance of BaseDecoder (inheriting from `torch.nn.Module` which
-            plays the role of decoder. This argument allows you to use your own neural networks
-            architectures if desired. If None is provided, a simple Multi Layer Preception
-            (https://en.wikipedia.org/wiki/Multilayer_perceptron) is used. Default: None.
-
-    .. note::
-        For high dimensional data we advice you to provide you own network architectures. With the
-        provided MLP you may end up with a ``MemoryError``.
+    """
     """
 
     def __init__(
         self,
         model_config: LVAE_IAF_Config,
-        encoder: Optional[BaseEncoder] = None,
-        decoder: Optional[BaseDecoder] = None,
-        pretrained_vae: Optional[VAE] = None,
-        pretrained_ldm: Optional[MyLatentDiffusion] = None,
-        ddim_sampler: Optional[DDIMSampler] = None,
-        temp: Optional[float] = 1.
+        encoder: Optional[BaseEncoder],
+        decoder: Optional[BaseDecoder] ,
+        pretrained_vae: Optional[VAE], #do not forget to call retrieveG on the vae beforehand !
+        pretrained_ldm: Optional[MyLatentDiffusion],
+        ddim_sampler: Optional[DDIMSampler],
+        precomputed_zT_samples = None,
+        temp: Optional[float] = 1.,
+        verbose = False
     ):
 
         VAE.__init__(self, model_config=model_config, encoder=encoder, decoder=decoder)
@@ -839,6 +822,16 @@ class LLDM_IAF(VAE):
         self.prior = model_config.prior
         self.posterior = model_config.posterior
 
+        self.pretrained_vae = pretrained_vae
+        self.pretrained_ldm = pretrained_ldm
+        self.zT_samples = precomputed_zT_samples
+        self.ddim_sampler = ddim_sampler
+        self.diff_t_steps = np.flip(ddim_sampler.time_steps)
+        self.device = self.pretrained_ldm.device
+        if verbose:
+            print('Running on ', self.device)
+
+        self.temperature = temp
         if self.posterior == "iaf":
             self.posterior_iaf_config = IAFConfig(
                 input_dim=(model_config.latent_dim,),
@@ -849,14 +842,24 @@ class LLDM_IAF(VAE):
                 include_batch_norm=False,
             )
 
-            self.posterior_iaf_flow = IAF(self.posterior_iaf_config)
+            self.posterior_iaf_flow = IAF(self.posterior_iaf_config).to(self.device)
 
-        self.pretrained_vae = pretrained_vae
-        self.pretrained_ldm = pretrained_ldm
-        self.ddim_sampler = ddim_sampler
-        self.diff_t_steps = np.flip(ddim_sampler.time_steps)
 
-        self.temperature = temp
+        if verbose:
+            print('Freezing pre-trained VAE and pre-trained LDM...')
+        
+        for p in self.pretrained_vae.parameters():
+            p.requires_grad = False
+        for p in self.pretrained_ldm.parameters():
+            p.requires_grad = False
+        
+        if verbose:
+            print('Freezing done.')
+            print('Number of trainable parameters: {:.1e}'.format(sum(p.numel() for p in self.parameters() if p.requires_grad)))
+            print('Number of total parameters: {:.1e}'.format(sum(p.numel() for p in self.parameters())))
+
+
+
 
         
 
@@ -871,11 +874,11 @@ class LLDM_IAF(VAE):
             ModelOutput: An instance of ModelOutput containing all the relevant parameters
 
         """
-
-        x = inputs["data"]
+        device = self.device
+        x = inputs["data"].to(device)
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
-        seq_mask = inputs['seq_mask']
-        pix_mask = inputs['pix_mask']
+        seq_mask = inputs['seq_mask'].to(device)
+        pix_mask = inputs['pix_mask'].to(device)
         epoch = kwargs.pop("epoch", 100)
         x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         batch_size = x.shape[0]
@@ -942,7 +945,8 @@ class LLDM_IAF(VAE):
                 vi_index = np.random.choice(np.arange(self.n_obs), p=probs.reshape(-1))
 
             else:
-                vi_index = np.random.randint(self.n_obs)
+                #vi_index = np.random.randint(self.n_obs)
+                vi_index = np.random.randint(0, self.n_obs)
             
             encoder_output = self.encoder(x[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
             mu, log_var = encoder_output.embedding, encoder_output.log_covariance
@@ -984,21 +988,21 @@ class LLDM_IAF(VAE):
             ## propagate in past - Forward Diffusion (Noising)
             z_seq = []
             z_rev = z_vi_index
-            log_abs_det_jac = 0
             for i in range(vi_index - 1, -1, -1):
                 #print("past", i)
                 # flow_output = self.flows[i](z_rev)
                 # z_rev = flow_output.out
                 # log_abs_det_jac += flow_output.log_abs_det_jac
                 # z_seq.append(z_rev)
-                t1 = self.diff_t_steps[i+1]
-                t2 =  self.diff_t_steps[i]
-                z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2)
+                t1 = self.diff_t_steps[(i+1)*np.ones(batch_size).astype(int)]
+                t2 =  self.diff_t_steps[i*np.ones(batch_size).astype(int)]
+                z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2).to(self.pretrained_ldm.device).float()
+
                 z_seq.append(z_rev)
 ##
             z_seq.reverse()
 #
-            z_seq.append(z_vi_index)
+            z_seq.append(z_vi_index.to(self.pretrained_ldm.device))
 
             #propagate in future - Backward Diffusion (Denoising)
             z_for = z_vi_index
@@ -1007,14 +1011,17 @@ class LLDM_IAF(VAE):
                 # flow_output = self.flows[i].inverse(z_for)
                 # z_for = flow_output.out
                 # z_seq.append(z_for)
-                t = self.diff_t_steps[i]
-                noise_pred = self.pretrained_ldm(z_for, t).reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w)
-
-                z_for = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float()
+                z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                noise_pred = self.pretrained_ldm(z_for, t)
+                z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
                                                                  index = i,
                                                                  x = z_for,
                                                                  temperature=self.temperature,
                                                                  repeat_noise=False)
+                
+                z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                z_seq.append(z_for)
 
 
 
@@ -1038,9 +1045,9 @@ class LLDM_IAF(VAE):
                 log_var=log_var,
                 z_0_vi_index=z_0_vi_index,
                 z_seq=z_seq,
+                vi_index=vi_index,
                 z_vi_index=z_vi_index,
                 log_abs_det_jac_posterior=log_abs_det_jac_posterior,
-                log_abs_det_jac=log_abs_det_jac,
                 epoch=epoch,
                 seq_mask=seq_mask,
                 pix_mask=pix_mask
@@ -1178,7 +1185,8 @@ class LLDM_IAF(VAE):
             KLD.mean(dim=0),
         )
 
-    def loss_function(self, recon_x, x, mu, log_var, z_0_vi_index, z_seq, z_vi_index, log_abs_det_jac, log_abs_det_jac_posterior, epoch, seq_mask=None, pix_mask=None):
+
+    def loss_function(self, recon_x, x, mu, log_var, z_0_vi_index, z_seq, vi_index, z_vi_index, log_abs_det_jac_posterior, epoch, seq_mask=None, pix_mask=None):
 
         if self.model_config.reconstruction_loss == "mse":
             recon_loss = (
@@ -1206,14 +1214,17 @@ class LLDM_IAF(VAE):
         z0 = z_seq[:, 0]
 
         # starting gaussian log-density
+        # it is q_\phi ( z_j | x_j) - same as LVAE
         log_prob_z_vi_index = (
             -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
         ).sum(dim=1) - log_abs_det_jac_posterior
 
-        log_p_z = self._log_p_z(z0) 
+        log_p_z = self._log_p_z(z0) # "easy"prior on z0
 
         # prior log-density
-        log_prior_z_vi_index = log_p_z + log_abs_det_jac
+        # here, we adapt. Prior is an approx. using sampled zT if 1 <= vi_index <= n_obs-2
+        #else, we have an exact prior
+        log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
 
         KLD = log_prob_z_vi_index - log_prior_z_vi_index
 
@@ -1264,6 +1275,40 @@ class LLDM_IAF(VAE):
             log_p_z = torch.logsumexp(log_p_z, dim=1)
 
         return log_p_z
+    
+    def log_p_j_hat(self, j, z):
+        """
+        Prior on z_j
+
+        Args:
+            j (int, 0 <= j <= self.n_obs-1): index of the latent variable (within the sequence)
+            z_j (torch.Tensor shape (batch_size, lat_dim)): latent variable
+        
+        Returns:
+            torch.Tensor: prior log-density of z_j
+
+        """
+
+        #For these two special cases, we do not need the sampled z_T, as we know tractable priors
+
+        assert j >= 0 and j < self.n_obs
+        if j == 0:
+            #z0 follows a standard normal prior
+            return (-0.5 * torch.pow(z, 2)).sum(dim=1)
+        
+        if j == self.n_obs-1:
+            return self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z)
+            # with precompiled G !
+        t_diff = self.diff_t_steps[j]
+        alpha_bar_j = self.pretrained_ldm.alpha_bar[t_diff]
+
+        mean = self.ddim_sampler.ddim_alpha_sqrt[j] * self.zT_samples
+        mean = mean.unsqueeze(0).repeat(z.shape[0], 1, 1)
+        alpha_bar_j = self.ddim_sampler.ddim_alpha[j]
+
+        log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_j)), dim=1)
+
+        return log_density.mean()
 
 
     def generate(self, z):

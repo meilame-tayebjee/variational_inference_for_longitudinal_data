@@ -174,7 +174,6 @@ def main(args):
                 mu.append(mu_data)
 
         mu = torch.cat(mu)
-        print(mu.shape)
 
         gmm = mixture.GaussianMixture(n_components=args.n_components, covariance_type='full', max_iter=2000,
                                                 verbose=2, tol=1e-3)
