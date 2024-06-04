@@ -16,8 +16,6 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
         model.T = T
         model.lbd = lbd
 
-        print(model.device)
-
         def G_sampl(z):
             z = z.to(device)
             omega = (

@@ -12,6 +12,8 @@ from ..nn import BaseDecoder, BaseEncoder
 from ..nn.default_architectures import Encoder_VAE_MLP
 from .vae_config import VAEConfig
 
+from sklearn_extra.cluster import KMedoids
+
 
 class VAE(BaseAE):
     """Vanilla Variational Autoencoder model.
@@ -215,3 +217,88 @@ class VAE(BaseAE):
                 print(f"Current nll at {i}: {np.mean(log_p)}")
 
         return np.mean(log_p)
+    
+    def build_metrics(self, mu, log_var, idx=None, T=0.3, lbd=0.0001):
+
+        if idx is not None:
+            mu = mu[idx]
+            log_var = log_var[idx]
+
+        with torch.no_grad():
+            self.M_i = torch.diag_embed((-log_var).exp()).detach().to(device)
+            self.M_i_flat = (-log_var).exp().detach().to(device)
+            self.M_i_inverse_flat = (log_var).exp().detach().to(device)
+            self.centroids = mu.detach().to(device)
+            self.T = T
+            self.lbd = lbd
+
+            device = self.device
+
+            def G_sampl(z):
+                z = z.to(device)
+                omega = (
+                    -(
+                        torch.transpose(
+                                    (self.centroids.unsqueeze(0) - z.unsqueeze(1)).unsqueeze(-1), 2, 3) @ torch.diag_embed(model.M_i_flat).unsqueeze(0) @ (model.centroids.unsqueeze(0) -                                      z.unsqueeze(1)).unsqueeze(-1)
+                                ) / self.T**2
+                    ).exp()
+
+                return (torch.diag_embed(self.M_i_flat).unsqueeze(0) * omega
+                ).sum(dim=1) + self.lbd * torch.eye(self.latent_dim).to(device)
+
+            self.G_sampl = G_sampl
+            
+        #return model
+
+
+    def retrieveG(self, train_data, verbose = False, device = 'cpu'):
+        last_obs_train = train_data[:, -1, :, :, :].to(device)
+        loader = torch.utils.data.DataLoader(last_obs_train, batch_size=200, shuffle=False)
+        mu = []
+        log_var = []
+        self.to(device)
+        with torch.no_grad():
+            for _ , x in enumerate(loader):
+
+                data = x.data
+
+                out = self.encoder(data.to(device))
+
+                mu_data, log_var_data = out.embedding, out.log_covariance
+
+                mu.append(mu_data)
+                log_var.append(log_var_data)
+
+        mu = torch.cat(mu)
+        log_var = torch.cat(log_var)
+
+        if verbose:
+            print('Running Kmedoids')
+            print(mu.shape)
+
+        kmedoids = KMedoids(n_clusters=100).fit(mu.detach().cpu().numpy())
+        medoids = torch.tensor(kmedoids.cluster_centers_).to(device)
+        centroids_idx = kmedoids.medoid_indices_ #
+
+        if verbose:
+            print("Finding temperature")
+            
+        eps_lf = 0.01
+        lbd = 0.01
+        T = 0
+        T_is = []
+        for i in range(len(medoids)-1):
+            mask = torch.tensor([k for k in range(len(medoids)) if k != i])
+            dist = torch.norm(medoids[i].unsqueeze(0) - medoids[mask], dim=-1)
+            T_i =torch.min(dist, dim=0)[0]
+            T_is.append(T_i.item())
+
+        T = np.max(T_is)
+
+        if verbose: 
+            print('Best temperature found: ', T)
+            print('Building metric')
+
+        self.build_metrics(mu, log_var, centroids_idx, T=T, lbd=lbd)
+
+        return self.G_sampl, log_var

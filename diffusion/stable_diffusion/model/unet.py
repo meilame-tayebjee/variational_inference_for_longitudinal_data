@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from unet_attention import SpatialTransformer
+from .unet_attention import SpatialTransformer
 
 
 class UNetModel(nn.Module):

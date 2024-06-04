@@ -27,9 +27,9 @@ import torch
 import torch.nn as nn
 import lightning as L
 
-from model.autoencoder import Autoencoder
-from model.clip_embedder import CLIPTextEmbedder
-from model.unet import UNetModel
+from .model.autoencoder import Autoencoder
+from .model.clip_embedder import CLIPTextEmbedder
+from .model.unet import UNetModel
 
 
 class DiffusionWrapper(nn.Module):
@@ -166,6 +166,7 @@ class MyLatentDiffusion(nn.Module):
                  n_steps: int,
                  linear_start: float,
                  linear_end: float,
+                 channels = 3
                  ):
         r"""
         :param unet_model: is the [U-Net](model/unet.html) that predicts noise
@@ -199,6 +200,13 @@ class MyLatentDiffusion(nn.Module):
         self.alpha_bar = nn.Parameter(alpha_bar.to(torch.float32), requires_grad=False)
         self.sqrt_alpha_bar = torch.sqrt(alpha_bar)
         self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
+
+
+        self.latent_dim = self.first_stage_model.latent_dim
+        self.c = channels
+        self.h, self.w  = int((self.latent_dim // 3)**0.5), int((self.latent_dim // 3)**0.5)
+
+
 
     @property
     def device(self):
@@ -238,25 +246,40 @@ class MyLatentDiffusion(nn.Module):
         
         sqrt_alpha_cum_prod = self.sqrt_alpha_bar.to(original.device)[t].reshape(batch_size)
         sqrt_one_minus_alpha_cum_prod = self.sqrt_one_minus_alpha_bar.to(original.device)[t].reshape(batch_size)
+
         
         # Reshape till (B,) becomes (B,1,1,1) if image is (B,C,H,W)
         for _ in range(len(original_shape) - 1):
             sqrt_alpha_cum_prod = sqrt_alpha_cum_prod.unsqueeze(-1)
         for _ in range(len(original_shape) - 1):
             sqrt_one_minus_alpha_cum_prod = sqrt_one_minus_alpha_cum_prod.unsqueeze(-1)
-        
         # Apply and Return Forward process equation
+        print("coeff x ldm ", sqrt_alpha_cum_prod)
+        print("coeff noise ldm ", sqrt_one_minus_alpha_cum_prod)
         return (sqrt_alpha_cum_prod.to(original.device) * original
                 + sqrt_one_minus_alpha_cum_prod.to(original.device) * noise)
     
-    def sequential_diffusion(self, x, t1, t2, noise):
-        shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0]) / self.sqrt_alpha_bar.to(x.device)[t1].reshape(x.shape[0])
-        shrink_sqrt_one_minus_cum_prod = 1 - shrink_sqrt_cum_prod
+    def sequential_diffusion(self, x, t1, t2, noise = None):
+
+
+        if t1 == 0:
+            shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0])
+        else:    
+            shrink_sqrt_cum_prod = self.sqrt_alpha_bar.to(x.device)[t2].reshape(x.shape[0]) / self.sqrt_alpha_bar.to(x.device)[t1 - 1].reshape(x.shape[0])
+        
+        
+        shrink_sqrt_one_minus_cum_prod = torch.sqrt( 1 - shrink_sqrt_cum_prod**2 )
+
+
+        if noise is None:
+            noise = torch.randn_like(x)
 
         for _ in range(len(x.shape) - 1):
             shrink_sqrt_cum_prod = shrink_sqrt_cum_prod.unsqueeze(-1)
             shrink_sqrt_one_minus_cum_prod = shrink_sqrt_one_minus_cum_prod.unsqueeze(-1)
         
+        print("coeff x ", shrink_sqrt_cum_prod)
+        print("coeff noise ", shrink_sqrt_one_minus_cum_prod)
         return (shrink_sqrt_cum_prod * x + shrink_sqrt_one_minus_cum_prod * noise)
 
 
@@ -273,24 +296,34 @@ class MyLatentDiffusion(nn.Module):
     
 
 class LitLDM(L.LightningModule):
-    def __init__(self, ldm, lr = 1e-3):
+    def __init__(self, ldm, vae, channels = 3, lr = 1e-3):
         super().__init__()
         self.ldm = ldm
         self.lr = lr
+        self.vae = vae
+        self.vae.eval()
+
+        self.lat_dim = vae.latent_dim
+
+        self.c = channels
+        self.h, self.w  = int((self.lat_dim // 3)**0.5), int((self.lat_dim // 3)**0.5)
+
+        for param in self.vae.parameters():
+            param.requires_grad = False
 
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
         x = batch
         batch_size = x.shape[0]
-        z = vae.encoder(x).embedding.reshape(-1, 3, 8, 8)
+        z = self.vae.encoder(x).embedding.reshape(-1, self.c, self.h, self.w)
         noise = torch.randn_like(z)
 
         t = torch.randint(0, self.ldm.n_steps, (z.shape[0],)).to(z.device)
 
         noisy_z = self.ldm.add_noise(z, noise, t).float()
 
-        noise_pred = self.ldm(noisy_z, t).reshape(batch_size, 3*8*8)
-        noise = noise.reshape(batch_size, 3*8*8)
+        noise_pred = self.ldm(noisy_z, t).reshape(batch_size, self.c * self.h * self.w)
+        noise = noise.reshape(batch_size, self.c * self.h * self.w)
 
         #z_pred = (noisy_z - (1- self.ldm.alpha_bar[t].reshape(batch_size, 1, 1, 1)) ** 0.5 * noise_pred) / (self.ldm.alpha_bar[t].reshape(batch_size, 1, 1, 1) ** 0.5)
 
@@ -304,21 +337,21 @@ class LitLDM(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x = batch
         batch_size = x.shape[0]
-        z = vae.encoder(x).embedding.reshape(-1, 3, 8, 8)
+        z = self.vae.encoder(x).embedding.reshape(-1, self.c, self.h, self.w)
         noise = torch.randn_like(z)
 
         t = torch.randint(0, self.ldm.n_steps, (batch_size,)).to(z.device)
         noisy_z = self.ldm.add_noise(z, noise, t).float()
 
-        noise_pred = self.ldm(noisy_z, t).reshape(batch_size, 3*8*8)
-        noise = noise.reshape(batch_size, 3*8*8)
+        noise_pred = self.ldm(noisy_z, t).reshape(batch_size,self.c * self.h * self.w)
+        noise = noise.reshape(batch_size, self.c * self.h * self.w)
 
         val_loss = ((noise_pred - noise)**2).sum(axis=1).mean()
 
         self.log("val_loss", val_loss, prog_bar = True)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.ldm.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, factor=0.8)
 
         return {'optimizer':optimizer, 'lr_scheduler':scheduler, 'monitor':'train_loss'}
