@@ -790,7 +790,7 @@ class LLDM_IAF(VAE):
         pretrained_ldm: Optional[MyLatentDiffusion],
         ddim_sampler: Optional[DDIMSampler],
         precomputed_zT_samples = None,
-        temp: Optional[float] = 1.,
+        temp: Optional[float] = 0.,
         verbose = False
     ):
 
@@ -827,6 +827,7 @@ class LLDM_IAF(VAE):
         self.zT_samples = precomputed_zT_samples
         self.ddim_sampler = ddim_sampler
         self.diff_t_steps = np.flip(ddim_sampler.time_steps)
+        print(self.diff_t_steps)
         self.device = self.pretrained_ldm.device
         if verbose:
             print('Running on ', self.device)
@@ -859,11 +860,15 @@ class LLDM_IAF(VAE):
             print('Number of total parameters: {:.1e}'.format(sum(p.numel() for p in self.parameters())))
 
 
-
+        self.res_dict = {}
+        for i in range(self.n_obs):
+            self.res_dict[i] = {'rec_loss':0,
+                                'reg_loss':0,
+                                'count':0}
 
         
 
-    def forward(self, inputs: BaseDataset, **kwargs):
+    def forward(self, inputs: BaseDataset, vi_index = None, **kwargs):
         """
         The VAE NF model
 
@@ -939,15 +944,16 @@ class LLDM_IAF(VAE):
 
             # if missing data pick randomly index of non missing data
             seq_mask = seq_mask.reshape(-1, self.n_obs)
-            if seq_mask[0].sum() < self.n_obs:
-                probs = seq_mask[0].cpu().numpy()
-                probs /= probs.sum()
-                vi_index = np.random.choice(np.arange(self.n_obs), p=probs.reshape(-1))
+            if vi_index is None:
+                if seq_mask[0].sum() < self.n_obs:
+                    probs = seq_mask[0].cpu().numpy()
+                    probs /= probs.sum()
+                    vi_index = np.random.choice(np.arange(self.n_obs), p=probs.reshape(-1))
 
-            else:
-                #vi_index = np.random.randint(self.n_obs)
-                vi_index = np.random.randint(0, self.n_obs)
+                else:
+                    vi_index = np.random.randint(0, self.n_obs)
             
+
             encoder_output = self.encoder(x[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
             mu, log_var = encoder_output.embedding, encoder_output.log_covariance
             h = None#encoder_output.context
@@ -989,11 +995,8 @@ class LLDM_IAF(VAE):
             z_seq = []
             z_rev = z_vi_index
             for i in range(vi_index - 1, -1, -1):
-                #print("past", i)
-                # flow_output = self.flows[i](z_rev)
-                # z_rev = flow_output.out
-                # log_abs_det_jac += flow_output.log_abs_det_jac
-                # z_seq.append(z_rev)
+
+                #To keep the forward pass parallisable, we repeat the same sampled vi_index
                 t1 = self.diff_t_steps[(i+1)*np.ones(batch_size).astype(int)]
                 t2 =  self.diff_t_steps[i*np.ones(batch_size).astype(int)]
                 z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2).to(self.pretrained_ldm.device).float()
@@ -1006,11 +1009,8 @@ class LLDM_IAF(VAE):
 
             #propagate in future - Backward Diffusion (Denoising)
             z_for = z_vi_index
+            
             for i in range(vi_index, self.n_obs - 1):
-                #print("future", i)
-                # flow_output = self.flows[i].inverse(z_for)
-                # z_for = flow_output.out
-                # z_seq.append(z_for)
                 t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float()
                 z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
                 noise_pred = self.pretrained_ldm(z_for, t)
@@ -1026,7 +1026,6 @@ class LLDM_IAF(VAE):
 
 
 
-
             z_seq = torch.cat(z_seq, dim=-1)
 
             ###############################
@@ -1037,7 +1036,6 @@ class LLDM_IAF(VAE):
             recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"] # [B*n_obs x input_dim]
 
             z_seq = z_seq.reshape(x.shape[0], self.n_obs, self.latent_dim)
-
             loss, recon_loss, kld = self.loss_function(
                 recon_x=recon_x,
                 x=x,
@@ -1052,6 +1050,10 @@ class LLDM_IAF(VAE):
                 seq_mask=seq_mask,
                 pix_mask=pix_mask
             )
+            self.res_dict[vi_index]['rec_loss'] += recon_loss.item()
+            self.res_dict[vi_index]['reg_loss'] += kld.item()
+            self.res_dict[vi_index]['count'] += 1
+
 
         output = ModelOutput(
             reconstruction_loss=recon_loss,
@@ -1219,12 +1221,14 @@ class LLDM_IAF(VAE):
             -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
         ).sum(dim=1) - log_abs_det_jac_posterior
 
-        log_p_z = self._log_p_z(z0) # "easy"prior on z0
+        #log_p_z = self._log_p_z(z0) # "easy"prior on z0
 
         # prior log-density
         # here, we adapt. Prior is an approx. using sampled zT if 1 <= vi_index <= n_obs-2
         #else, we have an exact prior
         log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
+
+        log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
 
         KLD = log_prob_z_vi_index - log_prior_z_vi_index
 
@@ -1299,301 +1303,66 @@ class LLDM_IAF(VAE):
         if j == self.n_obs-1:
             return self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z)
             # with precompiled G !
+        
         t_diff = self.diff_t_steps[j]
-        alpha_bar_j = self.pretrained_ldm.alpha_bar[t_diff]
-
-        mean = self.ddim_sampler.ddim_alpha_sqrt[j] * self.zT_samples
+        
+        alpha_bar_t_diff = self.pretrained_ldm.alpha_bar[t_diff]
+        sqrt_alpha_bar_t_diff = self.pretrained_ldm.sqrt_alpha_bar[t_diff]
+        mean = sqrt_alpha_bar_t_diff * self.zT_samples
         mean = mean.unsqueeze(0).repeat(z.shape[0], 1, 1)
-        alpha_bar_j = self.ddim_sampler.ddim_alpha[j]
 
-        log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_j)), dim=1)
+        mean = mean.to(z.device)
 
-        return log_density.mean()
+        log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_t_diff)), dim = -1)
+        log_density = log_density.mean(dim = -1) #Monte-Carlo average (over the 1000 zT samples)
+        log_density = log_density.mean() #average over the batch
+        return log_density
 
 
-    def generate(self, z):
-        z_for = z
+    def generate(self, num_gen_seq = 1, start = None, temperature = 0.01):
+        
 
-        #_rec = self.decoder(z).reconstruction
-        #h = self.encoder(_rec).context
+        c, h, w = self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w
+        #start = torch.randn(num_gen_seq,c,h,w).to(self.device) if start is None else start
+        start = torch.randn(num_gen_seq,c*h*w).to(self.device) if start is None else start
 
-        z_seq = [z]
-        for i in range(self.n_obs - 1):
-            flow_output = self.flows[i].inverse(z_for)
-            z_for = flow_output.out
+        # z, all_z, all_pred_z0 = self.ddim_sampler.sample(shape=(num_gen_seq,c,h,w), x_last = start, 
+        #                                                  temperature = 0)
+        # all_z= all_z.reshape(num_gen_seq, self.n_obs , self.latent_dim)
+
+        # all_recons_x = []
+
+        # for i in range(num_gen_seq):
+        #     recon_x = self.decoder(all_z[i])["reconstruction"]
+        #     all_recons_x.append(recon_x)
+
+
+        vi_index = 0
+        z_for = start
+        batch_size = start.shape[0]
+        z_seq = [start]
+        for i in range(vi_index, self.n_obs - 1):
+            t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float()
+            z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+            noise_pred = self.pretrained_ldm(z_for, t)
+            z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                index = i,
+                                                                x = z_for,
+                                                                temperature=temperature,
+                                                                repeat_noise=False)
+            
+            z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
             z_seq.append(z_for)
 
         z_seq = torch.cat(z_seq, dim=-1)
-
-        #t = torch.linspace(0, 1, self.n_obs).repeat(z.shape[0], 1).to(z.device)
-        #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(z.shape[0], -1, self.latent_dim)), dim=-1)
-        return self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim), z_seq #, torch.arange(0, self.n_obs).to(z.device).repeat(z.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim)
-
-    def infer_missing(self, x, seq_mask, pix_mask):
-        # iterate on seen images in sequence and keep the one maximizing p(x_i^obs|z)
+        all_recons_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]
         
-        p_x_given_z = []
-        reconstructions = []
-        x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        vi_idx = []
-        
-        for vi_index in range(self.n_obs):
-
-            if seq_mask[0][vi_index] != 0:
-
-                encoder_output = self.encoder(x[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
-
-                mu, log_var = encoder_output.embedding, encoder_output.log_covariance
-                h = None#encoder_output.context
-
-                std = torch.exp(0.5 * log_var)
-                z, _ = self._sample_gauss(mu, std)
-
-                z_0_vi_index = z
-
-                log_abs_det_jac_posterior = 0
-                if self.posterior == 'iaf':
-
-                    if self.posterior_iaf_config.context_dim is not None:
-                        try:
-                            h = encoder_output.context
-
-                        except AttributeError as e:
-                            raise AttributeError(
-                                "Cannot get context from encoder outputs. If you set `context_dim` argument to "
-                                "something different from None please ensure that the encoder actually outputs "
-                                f"the context vector 'h'. Exception caught: {e}."
-                            )
-
-                        # Pass it through the Normalizing flows
-                        flow_output = self.posterior_iaf_flow.inverse(z, h=h)  # sampling
-
-                    else:
-                        # Pass it through the Normalizing flows
-                        flow_output = self.posterior_iaf_flow.inverse(z)  # sampling
-
-                    z = flow_output.out
-                    log_abs_det_jac_posterior += flow_output.log_abs_det_jac
-
-                z_vi_index = z
-
-                ## propagate in past
-                z_seq = []
-                z_rev = z_vi_index
-                log_abs_det_jac = 0
-                for i in range(vi_index - 1, -1, -1):
-                    #print("past", i)
-                    flow_output = self.flows[i](z_rev)
-                    z_rev = flow_output.out
-                    log_abs_det_jac += flow_output.log_abs_det_jac
-                    z_seq.append(z_rev)
-
-                z_seq.reverse()
-
-                z_seq.append(z_vi_index)
-
-                #proapagate in future
-                z_for = z_vi_index
-                for i in range(vi_index, self.n_obs - 1):
-                    #print("future", i)
-                    flow_output = self.flows[i].inverse(z_for)
-                    z_for = flow_output.out
-                    z_seq.append(z_for)
-
-                z_seq = torch.cat(z_seq, dim=-1)
-
-                #t = torch.linspace(0, 1, self.n_obs).repeat(x.shape[0], 1).to(z.device)
-                #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(x.shape[0], -1, self.latent_dim)), dim=-1)
-
-                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"] # [B*n_obs x input_dim]
-
-                z_seq = z_seq.reshape(x.shape[0], self.n_obs, self.latent_dim)
-
-                if self.model_config.reconstruction_loss == "mse":
-                    recon_loss = (
-                        0.5 * (
-                            F.mse_loss(
-                                recon_x.reshape(x.shape[0]*self.n_obs, -1),
-                                x.reshape(x.shape[0]*self.n_obs, -1),
-                                reduction="none"
-                            ) * pix_mask.reshape(x.shape[0]*self.n_obs, -1)
-                        ).sum(dim=-1).reshape(x.shape[0], -1) * seq_mask
-                    ).mean(dim=-1)
-
-                elif self.model_config.reconstruction_loss == "bce":
-                
-                    recon_loss = (
-                        (
-                            F.binary_cross_entropy(
-                                recon_x.reshape(x.shape[0]*self.n_obs, -1),
-                                x.reshape(x.shape[0]*self.n_obs, -1),
-                                reduction="none"
-                            ) * pix_mask.reshape(x.shape[0]*self.n_obs, -1)
-                        ).sum(dim=-1).reshape(x.shape[0], -1) * seq_mask
-                    ).mean(dim=-1)
-
-                p_x_given_z.append(-recon_loss)
-                reconstructions.append(recon_x)
-                vi_idx.append(vi_index)
-
-        #print(len(p_x_given_z), p_x_given_z[0].shape)
-        #print(torch.cat(p_x_given_z).reshape(-1, x.shape[0]).shape)
-        idx = torch.argsort(torch.cat(p_x_given_z).reshape(-1, x.shape[0]), dim=0, descending=True)
-        #print(idx, torch.cat(reconstructions).reshape((-1, x.shape[0], self.n_obs,)+x.shape[2:]).shape)
-        #idx = [int(i + self.n_obs*k) for (k, i) in enumerate(idx)]
-        #print(idx, torch.cat(reconstructions).reshape((-1, x.shape[0], self.n_obs,)+x.shape[2:])[idx].shape)
-        return torch.cat(reconstructions).reshape((-1, x.shape[0], self.n_obs,)+x.shape[2:]), idx, vi_idx
-
-            
-
-
-
-    #def infer_traj(self, x):
+        #return torch.stack(all_recons_x, dim=0)
+        input_c, input_h, input_w = self.pretrained_vae.input_dim
+        return all_recons_x.reshape(num_gen_seq, self.n_obs, input_c, input_h, input_w)
 
     def _sample_gauss(self, mu, std):
         # Reparametrization trick
         # Sample N(0, I)
         eps = torch.randn_like(std)
         return mu + eps * std, eps
-
-    def get_nll(self, data, n_samples=1, batch_size=100):
-        """
-        Function computed the estimate negative log-likelihood of the model. It uses importance
-        sampling method with the approximate posterior distribution. This may take a while.
-
-        Args:
-            data (torch.Tensor): The input data from which the log-likelihood should be estimated.
-                Data must be of shape [Batch x n_channels x ...]
-            n_samples (int): The number of importance samples to use for estimation
-            batch_size (int): The batchsize to use to avoid memory issues
-        """
-
-        if n_samples <= batch_size:
-            n_full_batch = 1
-        else:
-            n_full_batch = n_samples // batch_size
-            n_samples = batch_size
-
-        log_p = []
-
-        for i in range(len(data)):
-            x = data[i].unsqueeze(0)
-
-            log_p_x = []
-
-            for _ in range(n_full_batch):
-
-                vi_index = np.random.randint(self.n_obs)
-
-                x_rep = torch.cat(batch_size * [x])
-
-                encoder_output = self.encoder(x_rep[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
-
-                mu, log_var = encoder_output.embedding, encoder_output.log_covariance
-                h = None#encoder_output.context
-
-                std = torch.exp(0.5 * log_var)
-                z, _ = self._sample_gauss(mu, std)
-
-                z_0_vi_index = z
-
-                log_abs_det_jac_posterior = 0
-                if self.posterior == 'iaf':
-
-                    if self.posterior_iaf_config.context_dim is not None:
-                        try:
-                            h = encoder_output.context
-
-                        except AttributeError as e:
-                            raise AttributeError(
-                                "Cannot get context from encoder outputs. If you set `context_dim` argument to "
-                                "something different from None please ensure that the encoder actually outputs "
-                                f"the context vector 'h'. Exception caught: {e}."
-                            )
-
-                        # Pass it through the Normalizing flows
-                        flow_output = self.posterior_iaf_flow.inverse(z, h=h)  # sampling
-
-                    else:
-                        # Pass it through the Normalizing flows
-                        flow_output = self.posterior_iaf_flow.inverse(z)  # sampling
-
-                    z = flow_output.out
-                    log_abs_det_jac_posterior += flow_output.log_abs_det_jac
-
-                z_vi_index = z
-
-                ## propagate in past
-                z_seq = []
-                z_rev = z_vi_index
-                log_abs_det_jac = 0
-                for j in range(vi_index - 1, -1, -1):
-                    #print("past", i)
-                    flow_output = self.flows[j](z_rev)
-                    z_rev = flow_output.out
-                    log_abs_det_jac += flow_output.log_abs_det_jac
-                    z_seq.append(z_rev)
-                z_seq.reverse()
-                z_seq.append(z_vi_index)
-
-                #proapagate in future
-                z_for = z_vi_index
-                for j in range(vi_index, self.n_obs - 1):
-                    #print("future", i)
-                    flow_output = self.flows[j].inverse(z_for)
-                    z_for = flow_output.out
-                    z_seq.append(z_for)
-
-                z_seq = torch.cat(z_seq, dim=-1)
-
-                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"] # [B*n_obs x input_dim]
-
-                z_seq = z_seq.reshape(x_rep.shape[0], self.n_obs, self.latent_dim)
-
-                
-                if self.model_config.reconstruction_loss == "mse":
-
-                    log_p_x_given_z = (-0.5 * F.mse_loss(
-                            recon_x.reshape(x_rep.shape[0]*self.n_obs, -1),
-                            x_rep.reshape(x_rep.shape[0]*self.n_obs, -1),
-                            reduction="none",
-                        ).sum(dim=-1) - torch.tensor(
-                            [np.prod(self.input_dim) / 2 * np.log(np.pi * 2)]
-                        ).to(
-                            data.device
-                        )
-                    ).reshape(x_rep.shape[0], -1).sum(dim=-1) # decoding distribution is assumed unit variance  N(mu, I)
-
-                    #
-                elif self.model_config.reconstruction_loss == "bce":
-
-                    log_p_x_given_z = -F.binary_cross_entropy(
-                        recon_x.reshape(x_rep.shape[0]*self.n_obs, -1),
-                        x_rep.reshape(x_rep.shape[0]*self.n_obs, -1),
-                        reduction="none",
-                    ).sum(dim=-1).reshape(x_rep.shape[0], -1).sum(dim=-1)
-
-                z0 = z_seq[:, 0]
-
-                # starting gaussian log-density
-                log_prob_z_vi_index = (
-                    -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
-                ).sum(dim=1) - log_abs_det_jac_posterior
-
-                log_p_z = self._log_p_z(z0) 
-
-                # prior log-density
-                log_prior_z_vi_index = log_p_z + log_abs_det_jac
-
-                log_p_x.append(
-                    log_p_x_given_z + log_prior_z_vi_index - log_prob_z_vi_index
-                )  # log(2*pi) simplifies
-
-            log_p_x = torch.cat(log_p_x)
-
-            log_p.append((torch.logsumexp(log_p_x, 0) - np.log(len(log_p_x))).item())
-
-            if i % 100 == 0:
-                print(f"Current nll at {i}: {np.mean(log_p)}")
-
-        return np.mean(log_p)

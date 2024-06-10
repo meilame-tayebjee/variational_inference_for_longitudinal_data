@@ -98,13 +98,13 @@ class DDIMSampler(DiffusionSampler):
     @torch.no_grad()
     def sample(self,
                shape: List[int],
-               cond: torch.Tensor,
                repeat_noise: bool = False,
                temperature: float = 1.,
                x_last: Optional[torch.Tensor] = None,
                uncond_scale: float = 1.,
                uncond_cond: Optional[torch.Tensor] = None,
                skip_steps: int = 0,
+               cond: torch.Tensor = None
                ):
         r"""
         ### Sampling Loop

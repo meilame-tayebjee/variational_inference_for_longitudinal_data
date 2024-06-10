@@ -3,6 +3,7 @@ import logging
 import os
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
+import pandas as pd
 
 import torch
 import torch.optim as optim
@@ -345,6 +346,22 @@ class BaseTrainer:
             epoch_train_loss = self.train_step(epoch)
             metrics["train_epoch_loss"] = epoch_train_loss
 
+            if hasattr(self.model, "warmup") and epoch > self.model.warmup:
+                if hasattr(self.model, "res_dict"):
+                    df = pd.DataFrame(self.model.res_dict).T
+
+                    df.rec_loss = df.rec_loss / df['count']
+                    df.reg_loss = df.reg_loss / df['count']
+
+                    print(df)
+
+
+                    self.model.res_dict = {}
+                    for i in range(self.model.n_obs):
+                        self.model.res_dict[i] = {'rec_loss':0,
+                                            'reg_loss':0,
+                                            'count':0}
+
             if self.eval_dataset is not None:
                 epoch_eval_loss = self.eval_step(epoch)
                 metrics["eval_epoch_loss"] = epoch_eval_loss
@@ -377,22 +394,22 @@ class BaseTrainer:
                 best_model = deepcopy(self.model)
                 self._best_model = best_model
 
-            if (
-                self.training_config.steps_predict is not None
-                and epoch % self.training_config.steps_predict == 0
-            ):
-                true_data, seen_data, reconstructions, generations, seq_mask, pix_mask = self.predict(best_model, epoch)
+            # if (
+            #     self.training_config.steps_predict is not None
+            #     and epoch % self.training_config.steps_predict == 0
+            # ):
+            #     true_data, seen_data, reconstructions, generations, seq_mask, pix_mask = self.predict(best_model, epoch)
 
-                self.callback_handler.on_prediction_step(
-                    self.training_config,
-                    true_data=true_data,
-                    seen_data=seen_data,
-                    reconstructions=reconstructions,
-                    generations=generations,
-                    global_step=epoch,
-                    seq_mask=seq_mask,
-                    pix_mask=pix_mask
-                )
+            #     self.callback_handler.on_prediction_step(
+            #         self.training_config,
+            #         true_data=true_data,
+            #         seen_data=seen_data,
+            #         reconstructions=reconstructions,
+            #         generations=generations,
+            #         global_step=epoch,
+            #         seq_mask=seq_mask,
+            #         pix_mask=pix_mask
+            #     )
 
             self.callback_handler.on_epoch_end(training_config=self.training_config)
 
