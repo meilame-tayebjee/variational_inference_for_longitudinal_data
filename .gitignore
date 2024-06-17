@@ -20,3 +20,7 @@ ldm/
 lightning_logs/
 sprites/
 pre-trained_LDM/
+lldm/
+riemannian_score_sde_main/
+wandb/
+_old/

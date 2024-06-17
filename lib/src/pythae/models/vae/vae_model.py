@@ -253,7 +253,7 @@ class VAE(BaseAE):
         #return model
 
 
-    def retrieveG(self, train_data, verbose = False, device = 'cuda'):
+    def retrieveG(self, train_data, verbose = False, T_multiplier = 1.5, device = 'cuda'):
         last_obs_train = train_data[:, -1, :, :, :].to(device)
         loader = torch.utils.data.DataLoader(last_obs_train, batch_size=200, shuffle=False)
         mu = []
@@ -299,7 +299,8 @@ class VAE(BaseAE):
         if verbose: 
             print('Best temperature found: ', T)
             print('Building metric')
-
+            print('Increasing T by ', T_multiplier)
+        T = T * T_multiplier
         self.build_metrics(mu, log_var, centroids_idx, T=T, lbd=lbd)
 
         return self.G_sampl, log_var

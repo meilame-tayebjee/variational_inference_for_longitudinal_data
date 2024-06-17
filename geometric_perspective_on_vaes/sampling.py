@@ -25,6 +25,10 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
                             ) / model.T**2
                 ).exp()
 
+            print('omega')
+            print(omega)
+            print('====')
+            print(torch.diag_embed(model.M_i_flat).unsqueeze(0))
             return (torch.diag_embed(model.M_i_flat).unsqueeze(0) * omega
             ).sum(dim=1) + model.lbd * torch.eye(model.latent_dim).to(device)
 

@@ -131,7 +131,7 @@ class DDIMSampler(DiffusionSampler):
         # Time steps to sample at $\tau_{S - i'}, \tau_{S - i' - 1}, \dots, \tau_1$
         time_steps = np.flip(self.time_steps)[skip_steps:]
 
-        all_x = []
+        all_x = [x]
         all_pred_x0 = []
         for i, step in monit.enum('Sample', time_steps):
             # Index $i$ in the list $[\tau_1, \tau_2, \dots, \tau_S]$
