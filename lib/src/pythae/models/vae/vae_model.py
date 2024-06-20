@@ -247,15 +247,18 @@ class VAE(BaseAE):
 
                 return (torch.diag_embed(self.M_i_flat).unsqueeze(0) * omega
                 ).sum(dim=1) + self.lbd * torch.eye(self.latent_dim).to(device)
+            
+            def G_inv(z):
+                return torch.inverse(G_sampl(z))
 
             self.G_sampl = G_sampl
+            self.G_inv = G_inv
             
         #return model
 
 
-    def retrieveG(self, train_data, verbose = False, T_multiplier = 1.5, device = 'cuda'):
-        last_obs_train = train_data[:, -1, :, :, :].to(device)
-        loader = torch.utils.data.DataLoader(last_obs_train, batch_size=200, shuffle=False)
+    def retrieveG(self, train_data, num_centroids = 200, T_multiplier = 1.5, device = 'cuda',  verbose = False):
+        loader = torch.utils.data.DataLoader(train_data, batch_size=256, shuffle=False)
         mu = []
         log_var = []
         self.to(device)
@@ -277,7 +280,7 @@ class VAE(BaseAE):
         if verbose:
             print('Running Kmedoids')
 
-        kmedoids = KMedoids(n_clusters=100).fit(mu.detach().cpu().numpy())
+        kmedoids = KMedoids(n_clusters=num_centroids).fit(mu.detach().cpu().numpy())
         medoids = torch.tensor(kmedoids.cluster_centers_).to(device)
         centroids_idx = kmedoids.medoid_indices_ #
 
@@ -302,8 +305,9 @@ class VAE(BaseAE):
             print('Increasing T by ', T_multiplier)
         T = T * T_multiplier
         self.build_metrics(mu, log_var, centroids_idx, T=T, lbd=lbd)
+        self.centroids_tens = mu
 
-        return self.G_sampl, log_var
+        return self.G_sampl, mu, log_var
     
     def log_pi(self, z):
-        return 0.5 * (torch.clamp(self.G_sampl(z).det(), 0, 1e10)).log()
+        return 0.5 * (torch.clamp(self.G_sampl(z).det(), 0, 1e32)).log()

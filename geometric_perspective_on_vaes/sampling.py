@@ -1,6 +1,5 @@
 import torch
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
 
@@ -8,6 +7,8 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
         mu = mu[idx]
         log_var = log_var[idx]
 
+
+    device = mu.device
     with torch.no_grad():
         model.M_i = torch.diag_embed((-log_var).exp()).detach().to(device)
         model.M_i_flat = (-log_var).exp().detach().to(device)
@@ -29,8 +30,7 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
             print(omega)
             print('====')
             print(torch.diag_embed(model.M_i_flat).unsqueeze(0))
-            return (torch.diag_embed(model.M_i_flat).unsqueeze(0) * omega
-            ).sum(dim=1) + model.lbd * torch.eye(model.latent_dim).to(device)
+            return (torch.diag_embed(model.M_i_flat).unsqueeze(0) * omega).sum(dim=1) + model.lbd * torch.eye(model.latent_dim).to(device)
 
         model.G_sampl = G_sampl
         
@@ -56,7 +56,7 @@ def log_pi(model, z):
 
 
 def hmc_sampling(model, mu, n_samples=1, mcmc_steps_nbr=1000, n_lf=10, eps_lf=0.01):
-
+    device = mu.device
     acc_nbr = torch.zeros(n_samples, 1).to(device)
     path = torch.zeros(n_samples, mcmc_steps_nbr, model.latent_dim).to(device)
     with torch.no_grad():
