@@ -257,7 +257,7 @@ class VAE(BaseAE):
         #return model
 
 
-    def retrieveG(self, train_data, num_centroids = 200, T_multiplier = 1.5, device = 'cuda',  verbose = False):
+    def retrieveG(self, train_data, num_centroids = 200, T_multiplier = 1, device = 'cuda',  verbose = False):
         loader = torch.utils.data.DataLoader(train_data, batch_size=256, shuffle=False)
         mu = []
         log_var = []

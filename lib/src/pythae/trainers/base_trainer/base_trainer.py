@@ -520,7 +520,6 @@ class BaseTrainer:
             loss = model_output.loss
 
             epoch_loss += loss.item()
-
             if epoch_loss != epoch_loss:
                 raise ArithmeticError("NaN detected in train loss")
 

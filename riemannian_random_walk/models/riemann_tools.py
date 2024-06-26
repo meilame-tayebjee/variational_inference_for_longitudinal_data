@@ -22,6 +22,8 @@ class Exponential_map(object):
             return torch.inverse(self.metric_inv(self.starting_pos)) @ v.unsqueeze(-1)
 
         else:
+            print(v.shape)
+            print(self.metric_inv(p).shape)
             return torch.inverse(self.metric_inv(p)) @ v.unsqueeze(-1)
 
     def _momentum_to_velocity(self, q, p=None):

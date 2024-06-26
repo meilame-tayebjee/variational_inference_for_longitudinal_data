@@ -880,10 +880,20 @@ class LLDM_IAF(VAE):
 
         """
         device = self.device
-        x = inputs["data"].to(device)
+
+        x = inputs['data'].to(device)
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
-        seq_mask = inputs['seq_mask'].to(device)
-        pix_mask = inputs['pix_mask'].to(device)
+
+        if hasattr(inputs, 'seq_mask'):
+            seq_mask = inputs['seq_mask'].to(device)
+        else:
+            seq_mask = torch.ones(x.shape[0], self.n_obs).to(device)
+        
+        if hasattr(inputs, 'pix_mask'):
+            pix_mask = inputs['pix_mask'].to(device)
+        else:
+            pix_mask = torch.ones_like(x)
+
         epoch = kwargs.pop("epoch", 100)
         x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         batch_size = x.shape[0]
@@ -1062,7 +1072,8 @@ class LLDM_IAF(VAE):
             recon_x=recon_x.reshape_as(x),
             z=z,
             z_seq=z_seq,
-            x=x
+            x=x,
+            log_abs_det_jac_posterior=log_abs_det_jac_posterior
         )
 
         return output
@@ -1190,6 +1201,8 @@ class LLDM_IAF(VAE):
 
     def loss_function(self, recon_x, x, mu, log_var, z_0_vi_index, z_seq, vi_index, z_vi_index, log_abs_det_jac_posterior, epoch, seq_mask=None, pix_mask=None):
 
+        assert not torch.isnan(x).any()
+        
         if self.model_config.reconstruction_loss == "mse":
             recon_loss = (
                 0.5 * (
@@ -1218,17 +1231,29 @@ class LLDM_IAF(VAE):
         # starting gaussian log-density
         # it is q_\phi ( z_j | x_j) - same as LVAE
         log_prob_z_vi_index = (
-            -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
+            -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / (torch.exp(log_var) + 1e-7)) #adding small constant to avoid numerical instability in the denominator
         ).sum(dim=1) - log_abs_det_jac_posterior
 
-        #log_p_z = self._log_p_z(z0) # "easy"prior on z0
 
         # prior log-density
-        # here, we adapt. Prior is an approx. using sampled zT if 1 <= vi_index <= n_obs-2
-        #else, we have an exact prior
+
+        # if vi_index == 0 or vi_index == self.n_obs - 1:
+        #     log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
+        #     log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
+        #     #KLD = log_prob_z_vi_index - log_prior_z_vi_index 
+        #     KLD = log_prob_z_vi_index + log_prior_z_vi_index 
+        # else:
+        #     KLD = torch.zeros_like(log_prob_z_vi_index)
+
+        #if vi_index == 0 or vi_index == self.n_obs - 1:
+                
         log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
         log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
         KLD = log_prob_z_vi_index - log_prior_z_vi_index
+        # #########
+        # KLD = - KLD #negative KL divergence
+        # ###########
+        KLD = torch.clamp(KLD, min = -2, max = 500)
 
         if self.linear_scheduling > 0:
             beta = self.beta * epoch / self.linear_scheduling
@@ -1294,26 +1319,29 @@ class LLDM_IAF(VAE):
         #For these two special cases, we do not need the sampled z_T, as we know tractable priors
 
         assert j >= 0 and j < self.n_obs
-        if j == 0:
-            #z0 follows a standard normal prior
-            return (-0.5 * torch.pow(z, 2)).sum(dim=1)
+        # if j == 0:
+        #     #z0 follows a standard normal prior
+        #     return (-0.5 * torch.pow(z, 2)).sum(dim=1)
         
-        if j == self.n_obs-1:
-            return self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z)
-            # with precompiled G !
-        
-        t_diff = self.diff_t_steps[j]
-        
-        alpha_bar_t_diff = self.pretrained_ldm.alpha_bar[t_diff]
-        sqrt_alpha_bar_t_diff = self.pretrained_ldm.sqrt_alpha_bar[t_diff]
-        mean = sqrt_alpha_bar_t_diff * self.zT_samples
-        mean = mean.unsqueeze(0).repeat(z.shape[0], 1, 1)
+        # #if j == self.n_obs-1:
+        # else:
+        #     return -self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z)
+        #     # with precompiled G !
 
-        mean = mean.to(z.device)
+        return (-0.5 * torch.pow(z, 2)).sum(dim=1)
+        
+        # t_diff = self.diff_t_steps[j]
+        
+        # alpha_bar_t_diff = self.pretrained_ldm.alpha_bar[t_diff]
+        # sqrt_alpha_bar_t_diff = self.pretrained_ldm.sqrt_alpha_bar[t_diff]
+        # mean = sqrt_alpha_bar_t_diff * self.zT_samples
+        # mean = mean.unsqueeze(0).repeat(z.shape[0], 1, 1)
 
-        log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_t_diff)), dim = -1)
-        log_density = log_density.mean(dim = -1) #Monte-Carlo average (over the 1000 zT samples)
-        log_density = log_density.mean() #average over the batch
+        # mean = mean.to(z.device)
+
+        # log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_t_diff)), dim = -1)
+        # log_density = log_density.mean(dim = -1) #Monte-Carlo average (over the 1000 zT samples)
+        # log_density = log_density.mean() #average over the batch
         return log_density
 
     def reconstruct(self, x, vi_index, temperature = 0.01):
