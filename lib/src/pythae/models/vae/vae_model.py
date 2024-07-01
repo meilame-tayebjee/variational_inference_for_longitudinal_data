@@ -43,6 +43,8 @@ class VAE(BaseAE):
         encoder: Optional[BaseEncoder] = None,
         #decoder: Optional[BaseDecoder] = None,
         decoder: Optional = None,
+        prior_var: Optional[int] = 1,
+        prior_mean= None
     ):
 
         BaseAE.__init__(self, model_config=model_config, decoder=decoder)
@@ -66,6 +68,12 @@ class VAE(BaseAE):
 
         self.set_encoder(encoder)
         self.warmup = 0
+        self.prior_var = prior_var
+
+        if prior_mean == None:
+            self.prior_mean = torch.zeros(self.latent_dim).to(self.device)
+        else:
+            self.prior_mean = prior_mean
 
     def forward(self, inputs: BaseDataset, **kwargs):
         """
@@ -134,7 +142,8 @@ class VAE(BaseAE):
                 ) * pix_mask.reshape(x.shape[0], -1)
             ).sum(dim=-1)
 
-        KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+        diff = mu - self.prior_mean.to(mu.device)
+        KLD = -0.5 * torch.sum(1 - torch.log(torch.tensor(self.prior_var).to(mu.device)) + log_var - ((diff.pow(2)  + log_var.exp()) / self.prior_var), dim=-1)
 
         return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 

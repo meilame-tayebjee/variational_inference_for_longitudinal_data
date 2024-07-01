@@ -790,7 +790,8 @@ class LLDM_IAF(VAE):
         pretrained_ldm: Optional[MyLatentDiffusion],
         ddim_sampler: Optional[DDIMSampler],
         precomputed_zT_samples = None,
-        temp: Optional[float] = 0.,
+        GM = None,
+        temp: Optional[float] = 1.,
         verbose = False
     ):
 
@@ -859,6 +860,8 @@ class LLDM_IAF(VAE):
             print('Number of trainable parameters: {:.1e}'.format(sum(p.numel() for p in self.parameters() if p.requires_grad)))
             print('Number of total parameters: {:.1e}'.format(sum(p.numel() for p in self.parameters())))
 
+
+        self.GM = GM
 
         self.res_dict = {}
         for i in range(self.n_obs):
@@ -1025,7 +1028,7 @@ class LLDM_IAF(VAE):
                 z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
                 noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
                 z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
-                                                                 index = i,
+                                                                 index = self.n_obs - 1- i,
                                                                  x = z_for,
                                                                  temperature=self.temperature,
                                                                  repeat_noise=False)
@@ -1240,8 +1243,8 @@ class LLDM_IAF(VAE):
         # if vi_index == 0 or vi_index == self.n_obs - 1:
         #     log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
         #     log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
-        #     #KLD = log_prob_z_vi_index - log_prior_z_vi_index 
-        #     KLD = log_prob_z_vi_index + log_prior_z_vi_index 
+        #     KLD = log_prob_z_vi_index - log_prior_z_vi_index 
+        #     KLD = torch.clamp(KLD, min = -2, max = 500)
         # else:
         #     KLD = torch.zeros_like(log_prob_z_vi_index)
 
@@ -1319,16 +1322,17 @@ class LLDM_IAF(VAE):
         #For these two special cases, we do not need the sampled z_T, as we know tractable priors
 
         assert j >= 0 and j < self.n_obs
-        # if j == 0:
-        #     #z0 follows a standard normal prior
-        #     return (-0.5 * torch.pow(z, 2)).sum(dim=1)
+        if j == 0:
+            #z0 follows a standard normal prior
+            return (-0.5 * torch.pow(z, 2)).sum(dim=1)
         
-        # #if j == self.n_obs-1:
-        # else:
-        #     return -self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z)
-        #     # with precompiled G !
+        #if j == self.n_obs-1:
+        else:
+            return self.pretrained_vae.log_pi(z) # log sqrt det G(z) = 0.5 log det G(z) with precompiled G !
 
-        return (-0.5 * torch.pow(z, 2)).sum(dim=1)
+            # z_np = z.clone().cpu().detach().numpy()
+            # #GM prior
+            # return torch.tensor(self.GM.score_samples(z_np)).to(z.device)
         
         # t_diff = self.diff_t_steps[j]
         
@@ -1342,9 +1346,9 @@ class LLDM_IAF(VAE):
         # log_density = - torch.sum( (z.unsqueeze(1) - mean)**2 / (2 * (1 - alpha_bar_t_diff)), dim = -1)
         # log_density = log_density.mean(dim = -1) #Monte-Carlo average (over the 1000 zT samples)
         # log_density = log_density.mean() #average over the batch
-        return log_density
+        # return log_density
 
-    def reconstruct(self, x, vi_index, temperature = 0.01):
+    def reconstruct(self, x, vi_index):
 
         device = self.device
         x = x["data"].to(device)
@@ -1357,7 +1361,6 @@ class LLDM_IAF(VAE):
 
         std = torch.exp(0.5 * log_var)
         z, _ = self._sample_gauss(mu, std)
-
         z_0_vi_index = z
 
         log_abs_det_jac_posterior = 0
@@ -1412,7 +1415,7 @@ class LLDM_IAF(VAE):
             z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
             noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
             z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
-                                                                index = i,
+                                                                index = self.n_obs -1- i,
                                                                 x = z_for,
                                                                 temperature=self.temperature,
                                                                 repeat_noise=False)

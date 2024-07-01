@@ -19,9 +19,10 @@ import numpy as np
 import torch
 
 from labml import monit
-from labml_nn.diffusion.stable_diffusion.latent_diffusion import LatentDiffusion
-from labml_nn.diffusion.stable_diffusion.sampler import DiffusionSampler
-
+# from labml_nn.diffusion.stable_diffusion.latent_diffusion import LatentDiffusion
+# from labml_nn.diffusion.stable_diffusion.sampler import DiffusionSampler
+from diffusion.stable_diffusion.latent_diffusion import LatentDiffusion
+from diffusion.stable_diffusion.sampler import DiffusionSampler
 
 class DDIMSampler(DiffusionSampler):
     r"""
@@ -138,7 +139,6 @@ class DDIMSampler(DiffusionSampler):
             index = len(time_steps) - i - 1
             # Time step $\tau_i$
             ts = x.new_full((bs,), step, dtype=torch.long)
-
             # Sample $x_{\tau_{i-1}}$
             x, pred_x0, e_t = self.p_sample(x, cond, ts, step, index=index,
                                             repeat_noise=repeat_noise,
@@ -173,7 +173,6 @@ class DDIMSampler(DiffusionSampler):
             $\epsilon_\theta(x_t, c) = s\epsilon_\text{cond}(x_t, c) + (s - 1)\epsilon_\text{cond}(x_t, c_u)$
         :param uncond_cond: is the conditional embedding for empty prompt $c_u$
         """
-
         # Get $\epsilon_\theta(x_{\tau_i})$
         e_t = self.get_eps(x, t, c,
                            uncond_scale=uncond_scale,
@@ -195,11 +194,13 @@ class DDIMSampler(DiffusionSampler):
         """
 
         # $\alpha_{\tau_i}$
+
         alpha = self.ddim_alpha[index]
         # $\alpha_{\tau_{i-1}}$
         alpha_prev = self.ddim_alpha_prev[index]
         # $\sigma_{\tau_i}$
         sigma = self.ddim_sigma[index]
+
         # $\sqrt{1 - \alpha_{\tau_i}}$
         sqrt_one_minus_alpha = self.ddim_sqrt_one_minus_alpha[index]
 
@@ -209,7 +210,6 @@ class DDIMSampler(DiffusionSampler):
         # Direction pointing to $x_t$
         # $$\sqrt{1 - \alpha_{\tau_{i- 1}} - \sigma_{\tau_i}^2} \cdot \epsilon_\theta(x_{\tau_i})$$
         dir_xt = (1. - alpha_prev - sigma ** 2).sqrt() * e_t
-
         # No noise is added, when $\eta = 0$
         if sigma == 0.:
             noise = 0.

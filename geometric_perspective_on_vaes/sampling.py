@@ -38,6 +38,7 @@ def build_metrics(model, mu, log_var, idx=None, T=0.3, lbd=0.0001):
 
 
 def d_log_sqrt_det_G(z, model):
+    z = z.to(model.centroids.device)
     with torch.no_grad():
         omega = (
                 -(
@@ -76,7 +77,7 @@ def hmc_sampling(model, mu, n_samples=1, mcmc_steps_nbr=1000, n_lf=10, eps_lf=0.
 
                 g = -d_log_sqrt_det_G(z, model).reshape(
                     n_samples, model.latent_dim
-                )
+                ).to(device)
                 # step 1
                 rho_ = rho - (eps_lf / 2) * g
 
@@ -84,7 +85,7 @@ def hmc_sampling(model, mu, n_samples=1, mcmc_steps_nbr=1000, n_lf=10, eps_lf=0.
                 z = z + eps_lf * rho_
                 g = -d_log_sqrt_det_G(z, model).reshape(
                     n_samples, model.latent_dim
-                )
+                ).to(device)
 
                 # step 3
                 rho__ = rho_ - (eps_lf / 2) * g
@@ -95,12 +96,11 @@ def hmc_sampling(model, mu, n_samples=1, mcmc_steps_nbr=1000, n_lf=10, eps_lf=0.
                 rho =  rho__
                 #beta_sqrt_old = beta_sqrt
 
-            H = -log_pi(model, z) + 0.5 * torch.norm(rho, dim=1) ** 2
+            H = -log_pi(model, z).to(rho.device) + 0.5 * torch.norm(rho, dim=1) ** 2
             alpha = torch.exp(-H) / (torch.exp(-H0))
 
             acc = torch.rand(n_samples).to(device)
             moves = (acc < alpha).type(torch.int).reshape(n_samples, 1)
-
             acc_nbr += moves
 
             z = z * moves + (1 - moves) * z0
