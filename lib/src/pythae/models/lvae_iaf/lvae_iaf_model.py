@@ -806,18 +806,6 @@ class LLDM_IAF(VAE):
 
         self.flows = nn.ModuleList()
 
-        iaf_config = IAFConfig(
-            input_dim=(model_config.latent_dim,),
-            n_blocks=model_config.n_made_blocks,
-            n_hidden_in_made=model_config.n_hidden_in_made,
-            hidden_size=model_config.hidden_size,
-            include_batch_norm=False,
-            context_dim=model_config.context_dim
-        )
-
-        for i in range(self.n_obs - 1):
-            self.flows.append(IAF(iaf_config))
-
         self.linear_scheduling = self.model_config.linear_scheduling_steps
 
         self.prior = model_config.prior
@@ -1359,7 +1347,8 @@ class LLDM_IAF(VAE):
         mu, log_var = encoder_output.embedding, encoder_output.log_covariance
 
 
-        std = torch.exp(0.5 * log_var)
+        #std = torch.exp(0.5 * log_var)
+        std = torch.zeros_like(log_var)
         z, _ = self._sample_gauss(mu, std)
         z_0_vi_index = z
 
@@ -1422,9 +1411,6 @@ class LLDM_IAF(VAE):
             
             z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
             z_seq.append(z_for)
-
-
-
 
         z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
         recon_x = self.decoder(z_seq)["reconstruction"]

@@ -227,7 +227,7 @@ class VAE(BaseAE):
 
         return np.mean(log_p)
     
-    def build_metrics(self, mu, log_var, idx=None, T=0.3, lbd=0.0001):
+    def build_metrics(self, mu, log_var, idx=None, addStdNorm = False, T=0.3, lbd=0.0001, verbose = False):
         device = mu.device
         if idx is not None:
             mu = mu[idx]
@@ -240,8 +240,14 @@ class VAE(BaseAE):
             self.centroids = mu.detach().to(device)
             self.T = T
             self.lbd = lbd
-
             
+            if addStdNorm:
+                if verbose:
+                    print('Adding std normal to centroids and var')
+                self.centroids = torch.cat([self.centroids, torch.zeros_like(self.centroids[0]).unsqueeze(0)], dim=0)
+                self.M_i = torch.cat([self.M_i, torch.eye(self.latent_dim).unsqueeze(0).to(device)], dim=0)
+                self.M_i_flat = torch.cat([self.M_i_flat, torch.ones(self.latent_dim).unsqueeze(0).to(device)], dim=0)
+                self.M_i_inverse_flat = torch.cat([self.M_i_inverse_flat, torch.ones(self.latent_dim).unsqueeze(0).to(device)], dim=0)
 
             def G_sampl(z):
                 z = z.to(device)
@@ -266,7 +272,7 @@ class VAE(BaseAE):
         #return model
 
 
-    def retrieveG(self, train_data, num_centroids = 200, T_multiplier = 1, device = 'cuda',  verbose = False):
+    def retrieveG(self, train_data, num_centroids = 200, T_multiplier = 1, addStdNorm = False, device = 'cuda',  verbose = False):
         loader = torch.utils.data.DataLoader(train_data, batch_size=256, shuffle=False)
         mu = []
         log_var = []
@@ -313,7 +319,7 @@ class VAE(BaseAE):
             print('Building metric')
             print('Increasing T by ', T_multiplier)
         T = T * T_multiplier
-        self.build_metrics(mu, log_var, centroids_idx, T=T, lbd=lbd)
+        self.build_metrics(mu, log_var, centroids_idx, addStdNorm=addStdNorm, T=T, lbd=lbd, verbose=verbose)
         self.centroids_tens = mu
 
         return self.G_sampl, mu, log_var
