@@ -9,7 +9,6 @@ __pycache__
 *.pdf
 *.json
 lib/plots/to_gif/.DS_Store
-Sprites-master/
 lib/data_folders/
 lib/data_folders/eval
 lib/my_data/MNIST/
@@ -18,7 +17,6 @@ lib/animation.gif
 pre-trained_vae/
 ldm/
 lightning_logs/
-sprites/
 pre-trained_LDM/
 lldm/
 riemannian_score_sde_main/
