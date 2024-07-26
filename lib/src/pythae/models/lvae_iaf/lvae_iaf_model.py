@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 import sys
+from tqdm import tqdm
 sys.path.append("......")
 sys.path.append(".....")
 import numpy as np
@@ -13,10 +14,11 @@ from ...data.datasets import BaseDataset
 from ..base.base_utils import ModelOutput
 from ..nn import BaseDecoder, BaseEncoder
 from ..normalizing_flows import IAF, IAFConfig
-from ..vae import VAE
+from ..vae import VAE, VAEConfig
 from .lvae_iaf_config import LVAE_IAF_Config
 from diffusion.stable_diffusion.latent_diffusion import MyLatentDiffusion
 from diffusion.stable_diffusion.sampler.ddim import DDIMSampler
+from geometric_perspective_on_vaes.sampling import hmc_sampling
 
 
 class LVAE_IAF(VAE):
@@ -799,6 +801,8 @@ class LLDM_IAF(VAE):
 
         self.model_name = "LLDM_IAF"
 
+        self.input_dim = model_config.input_dim
+
         self.n_obs = model_config.n_obs_per_ind
         self.warmup = model_config.warmup
         self.context_dim = model_config.context_dim
@@ -1024,15 +1028,9 @@ class LLDM_IAF(VAE):
                 z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
                 z_seq.append(z_for)
 
-
-
-
             z_seq = torch.cat(z_seq, dim=-1)
 
             ###############################
-
-            #t = torch.linspace(0, 1, self.n_obs).repeat(x.shape[0], 1).to(z.device)
-            #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(x.shape[0], -1, self.latent_dim)), dim=-1)
 
             recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"] # [B*n_obs x input_dim]
 
@@ -1336,7 +1334,7 @@ class LLDM_IAF(VAE):
         # log_density = log_density.mean() #average over the batch
         # return log_density
 
-    def reconstruct(self, x, vi_index):
+    def reconstruct(self, x, vi_index, z_vi_index = None):
 
         device = self.device
         x = x["data"].to(device)
@@ -1347,8 +1345,8 @@ class LLDM_IAF(VAE):
         mu, log_var = encoder_output.embedding, encoder_output.log_covariance
 
 
-        #std = torch.exp(0.5 * log_var)
-        std = torch.zeros_like(log_var)
+        std = torch.exp(0.5 * log_var)
+        #std = torch.zeros_like(log_var)
         z, _ = self._sample_gauss(mu, std)
         z_0_vi_index = z
 
@@ -1376,7 +1374,7 @@ class LLDM_IAF(VAE):
             z = flow_output.out
             log_abs_det_jac_posterior += flow_output.log_abs_det_jac
 
-        z_vi_index = z
+        z_vi_index = z if z_vi_index is None else z_vi_index
 
                 ##### FROM LVAE to LLDM ########
 
@@ -1420,47 +1418,250 @@ class LLDM_IAF(VAE):
 
 
 
-    def generate(self, num_gen_seq = 1, start = None, temperature = 0.01):
+    def generate(self, train_data, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, freeze = False, device = 'cuda', verbose = True):
         
+        self = self.to(device)
+        model_config = VAEConfig(input_dim=self.input_dim, latent_dim= self.latent_dim, uses_default_encoder= False, uses_default_decoder= False, reconstruction_loss= 'mse')
+        final_vae = VAE(model_config = model_config, encoder = self.encoder, decoder = self.decoder)
+        obs_data = train_data[:, vi_index]
+        _, mu, log_var = final_vae.retrieveG(obs_data, verbose = verbose, T_multiplier=T_multiplier, device = device, addStdNorm=False)
 
-        c, h, w = self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w
-        #start = torch.randn(num_gen_seq,c,h,w).to(self.device) if start is None else start
-        start = torch.randn(num_gen_seq,c*h*w).to(self.device) if start is None else start
+        batch_size = num_gen_seq if num_gen_seq <= 256 else 256
+        all_z_vi = []
 
-        # z, all_z, all_pred_z0 = self.ddim_sampler.sample(shape=(num_gen_seq,c,h,w), x_last = start, 
-        #                                                  temperature = 0)
-        # all_z= all_z.reshape(num_gen_seq, self.n_obs , self.latent_dim)
+        final_vae = final_vae.to(device)
+        mu = mu.to(device)
 
-        # all_recons_x = []
-
-        # for i in range(num_gen_seq):
-        #     recon_x = self.decoder(all_z[i])["reconstruction"]
-        #     all_recons_x.append(recon_x)
-
-
-        vi_index = 0
-        z_for = start
-        batch_size = start.shape[0]
-        z_seq = [start]
-        for i in range(vi_index, self.n_obs - 1):
-            t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float()
-            z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
-            noise_pred = self.pretrained_ldm(z_for, t)
-            z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
-                                                                index = i,
-                                                                x = z_for,
-                                                                temperature=temperature,
-                                                                repeat_noise=False)
+        if verbose:
+            if freeze:
+                print(f'Freezing the {vi_index}th/rd obs...')
+                print(f'Sampling 1 point on the {vi_index}th/rd manifold...')
             
-            z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
-            z_seq.append(z_for)
+            else:
+                print(f'Sampling {num_gen_seq} points on the {vi_index}th/rd manifold...')
 
-        z_seq = torch.cat(z_seq, dim=-1)
-        all_recons_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]
+        if not freeze:
+            for j in range(0, num_gen_seq // batch_size):
+                z, p = hmc_sampling(final_vae, mu, n_samples=batch_size, mcmc_steps_nbr=100)
+                all_z_vi.append(z)
+            
+            if num_gen_seq % batch_size != 0:
+                z,p = hmc_sampling(final_vae, mu, n_samples=num_gen_seq % batch_size, mcmc_steps_nbr=100)
+                all_z_vi.append(z)
+
+            #all_z_vi = torch.cat(all_z_vi, dim=0).cpu().detach() #shape (num_gen_seq, latent_dim)
+        else:
+            z,p = hmc_sampling(final_vae, mu, n_samples=1, mcmc_steps_nbr=100)
+            all_z_vi = [z]*num_gen_seq
+            #all_z_vi = torch.cat([z]*num_gen_seq, dim=0).cpu().detach()
+
+        full_recon_x, full_z_seq = [], []
+        for j in range(len(all_z_vi)):
+            z_vi_index = all_z_vi[j]
+            ## propagate in past - Forward Diffusion (Noising)
+            z_seq = []
+            z_rev = z_vi_index
+            if verbose and vi_index > 0:
+                print('Propagating in the past...')
+
+            for i in range(vi_index - 1, -1, -1): #noising in a sequential way
+
+                #To keep the forward pass parallelisable, we repeat the same sampled vi_index
+                t1 = self.diff_t_steps[(i+1)*np.ones(z_rev.shape[0]).astype(int)]
+                t2 =  self.diff_t_steps[i*np.ones(z_rev.shape[0]).astype(int)]
+                z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2).to(self.pretrained_ldm.device).float()
+
+                z_seq.append(z_rev)
+    ##
+            z_seq.reverse()
+    #
+            z_seq.append(z_vi_index.to(self.pretrained_ldm.device))
+
+            #propagate in future - Backward Diffusion (Denoising)
+            z_for = z_vi_index
+            if verbose and vi_index < self.n_obs - 1:
+                print('Propagating in the future...')
+            for i in range(vi_index, self.n_obs - 1):
+                t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float() #diffusion time-step
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
+                z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                    index = self.n_obs -1- i,
+                                                                    x = z_for,
+                                                                    temperature=self.temperature,
+                                                                    repeat_noise=False)
+                
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                z_seq.append(z_for)
+
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
+
+            if verbose:
+                print('Decoding...')
+            recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            
+            z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
+            full_recon_x.append(recon_x.detach().cpu())
+            full_z_seq.append(z_seq.detach().cpu())
         
-        #return torch.stack(all_recons_x, dim=0)
-        input_c, input_h, input_w = self.pretrained_vae.input_dim
-        return all_recons_x.reshape(num_gen_seq, self.n_obs, input_c, input_h, input_w)
+        full_recon_x = torch.cat(full_recon_x, dim=0)
+        full_z_seq = torch.cat(full_z_seq, dim=0)
+
+        return full_recon_x, full_z_seq
+
+
+    def get_nll(self, data, vi_index, n_samples=1, batch_size=100):
+        """
+        Function computed the estimate negative log-likelihood of the model. It uses importance
+        sampling method with the approximate posterior distribution. This may take a while.
+
+        Args:
+            data (torch.Tensor): The input data from which the log-likelihood should be estimated.
+                Data must be of shape [Batch x n_channels x ...]
+            n_samples (int): The number of importance samples to use for estimation
+            batch_size (int): The batchsize to use to avoid memory issues
+        """
+
+        if n_samples <= batch_size:
+            n_full_batch = 1
+        else:
+            n_full_batch = n_samples // batch_size
+            n_samples = batch_size
+
+        log_p = []
+        for i in tqdm(range(len(data))):
+            x = data[i].unsqueeze(0).to(self.device) # (1, 7, 3, 64, 64)
+
+            log_p_x = []
+
+            for _ in range(n_full_batch):
+
+                x_rep = torch.cat(batch_size * [x]) # (100, 7, 3, 64, 64)
+
+                encoder_output = self.encoder(x_rep[:, vi_index]) # (100, 12) 
+
+                mu, log_var = encoder_output.embedding, encoder_output.log_covariance
+                std = torch.exp(0.5 * log_var)
+                z, _ = self._sample_gauss(mu, std)
+
+                z_0_vi_index = z
+
+                log_abs_det_jac_posterior = 0
+                if self.posterior == 'iaf':
+
+                    if self.posterior_iaf_config.context_dim is not None:
+                        try:
+                            h = encoder_output.context
+
+                        except AttributeError as e:
+                            raise AttributeError(
+                                "Cannot get context from encoder outputs. If you set `context_dim` argument to "
+                                "something different from None please ensure that the encoder actually outputs "
+                                f"the context vector 'h'. Exception caught: {e}."
+                            )
+
+                        # Pass it through the Normalizing flows
+                        flow_output = self.posterior_iaf_flow.inverse(z, h=h)  # sampling
+
+                    else:
+                        # Pass it through the Normalizing flows
+                        flow_output = self.posterior_iaf_flow.inverse(z)  # sampling
+
+                    z = flow_output.out
+                    log_abs_det_jac_posterior += flow_output.log_abs_det_jac
+
+                z_vi_index = z
+
+                ## propagate in past - Forward Diffusion (Noising)
+                z_seq = []
+                z_rev = z_vi_index
+                for k in range(vi_index - 1, -1, -1): #noising in a sequential way
+
+                    #To keep the forward pass parallelisable, we repeat the same sampled vi_index
+                    t1 = self.diff_t_steps[(k+1)*np.ones(batch_size).astype(int)]
+                    t2 =  self.diff_t_steps[k*np.ones(batch_size).astype(int)]
+                    z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2).to(self.pretrained_ldm.device).float()
+
+                    z_seq.append(z_rev)
+    ##
+                z_seq.reverse()
+    #
+                z_seq.append(z_vi_index.to(self.pretrained_ldm.device))
+
+                #propagate in future - Backward Diffusion (Denoising)
+                z_for = z_vi_index
+                
+                for k in range(vi_index, self.n_obs - 1):
+                    t = torch.tensor(self.diff_t_steps[k]).reshape(1).to(self.pretrained_ldm.device).float() #diffusion time-step
+                    z_for = z_for.reshape(batch_size, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                    noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
+                    z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                    index = self.n_obs - 1- k,
+                                                                    x = z_for,
+                                                                    temperature=self.temperature,
+                                                                    repeat_noise=False)
+                    
+                    z_for = z_for.reshape(batch_size, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                    z_seq.append(z_for)
+
+                z_seq = torch.cat(z_seq, dim=-1)
+
+                ###############################
+
+                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"]# [B*n_obs x input_dim] # (700, 3, 64, 64)
+
+                z_seq = z_seq.reshape(x_rep.shape[0], self.n_obs, self.latent_dim) # (100, 7, 12)
+
+                
+                if self.model_config.reconstruction_loss == "mse":
+                    log_p_x_given_z = (-0.5 * F.mse_loss(
+                            recon_x.reshape(x_rep.shape[0]*self.n_obs, -1),
+                            x_rep.reshape(x_rep.shape[0]*self.n_obs, -1),
+                            reduction="none",
+                        ).sum(dim=-1) - torch.tensor(
+                            [np.prod(self.input_dim) / 2 * np.log(np.pi * 2)]
+                        ).to(
+                            x_rep.device
+                        )
+                    ).reshape(x_rep.shape[0], -1).mean(dim=-1) # decoding distribution is assumed unit variance  N(mu, I)
+
+                    #
+                elif self.model_config.reconstruction_loss == "bce":
+
+                    log_p_x_given_z = -F.binary_cross_entropy(
+                        recon_x.reshape(x_rep.shape[0]*self.n_obs, -1),
+                        x_rep.reshape(x_rep.shape[0]*self.n_obs, -1),
+                        reduction="none",
+                    ).sum(dim=-1).reshape(x_rep.shape[0], -1).mean(dim=-1)
+
+                z0 = z_seq[:, 0]
+
+                # starting gaussian log-density
+                log_prob_z_vi_index = (
+                    -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
+                ).sum(dim=1) - log_abs_det_jac_posterior
+
+                log_p_z = self._log_p_z(z0) 
+
+                # prior log-density
+                log_prior_z_vi_index = log_p_z
+
+                # log_p_x.append(
+                #     log_p_x_given_z.detach().cpu() + log_prior_z_vi_index.detach().cpu() - log_prob_z_vi_index.detach().cpu()
+                # )  # log(2*pi) simplifies
+                log_p_x.append(
+                    log_p_x_given_z.detach().cpu()
+                )
+
+            log_p_x = torch.cat(log_p_x)
+
+            log_p.append((torch.logsumexp(log_p_x, 0) - np.log(len(log_p_x))).item())
+
+            if i % 100 == 0:
+                print(f"Current nll at {i}: {np.mean(log_p)}")
+
+        return np.mean(log_p)
+
 
     def _sample_gauss(self, mu, std):
         # Reparametrization trick
