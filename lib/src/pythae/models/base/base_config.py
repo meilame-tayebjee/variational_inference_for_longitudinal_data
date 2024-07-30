@@ -2,7 +2,7 @@ from typing import Tuple, Union
 
 from pydantic.dataclasses import dataclass
 
-from pythae.config import BaseConfig
+from ...config import BaseConfig
 
 
 @dataclass

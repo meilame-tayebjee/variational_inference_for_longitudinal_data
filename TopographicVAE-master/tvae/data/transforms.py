@@ -22,10 +22,11 @@ class To_Color(object):
         return format_string
 
 class AddRandomTransformationDims(object):
-    def __init__(self, angle_set, color_set, scale_set):
+    def __init__(self, angle_set, color_set, scale_set, transform_idx = None):
         self.angle_set = angle_set
         self.color_set = color_set
         self.scale_set = scale_set
+        self.transform_idx = transform_idx
 
     def __call__(self, tensor):
         x = tensor.unsqueeze(0)
@@ -46,7 +47,10 @@ class AddRandomTransformationDims(object):
         self.scale_set = self.scale_set[start_scale:] + self.scale_set[:start_scale]
         self.color_set = self.color_set[start_color:] + self.color_set[:start_color]
 
-        transform_type = torch.randint(0, 3, (1,))
+        if self.transform_idx == None:
+            transform_type = torch.randint(0, 3, (1,))
+        else:
+            transform_type = self.transform_idx
 
         if transform_type == 0:
             scale_idx = torch.randint(0, len(self.scale_set), (1,))

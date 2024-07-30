@@ -31,7 +31,7 @@ class DuplicateTargets(object):
 
 
 class Preprocessor:
-    def __init__(self, config):
+    def __init__(self, config, transform = 'all', coloring = True):
         self.data_dir = config['data_dir']
         self.batch_size = config['batch_size']
         self.pct_val = config['pct_val']
@@ -54,6 +54,18 @@ class Preprocessor:
         self.n_transforms_test = len(self.test_angle_set) * len(self.test_color_set) * len(self.test_scale_set)
 
         self.random_crop = config['random_crop']
+
+        if transform == 'rotation':
+            self.transform_idx = 0
+        elif transform =='color':
+            self.transform_idx = 2
+        elif transform == 'scale':
+            self.transform_idx = 1
+        else:
+            self.transform_idx = None
+        
+        self.coloring = coloring
+
 
         # Compute sampler for validation set
         self.get_train_val_split()
@@ -85,11 +97,15 @@ class Preprocessor:
                                    transforms.ToTensor()]
 
         if self.dataset_name == 'MNIST' and len(self.train_color_set) > 1:
-            self.base_transforms_train = [To_Color()] + self.base_transforms_train
-            self.base_transforms_test = [To_Color()] + self.base_transforms_test
+            if self.coloring:
+                self.base_transforms_train = [To_Color()] + self.base_transforms_train
+                self.base_transforms_test = [To_Color()] + self.base_transforms_test
+            else:
+                self.base_transforms_train = self.base_transforms_train
+                self.base_transforms_test = self.base_transforms_test
 
-        self.base_transforms_train = self.base_transforms_train + [AddRandomTransformationDims(self.train_angle_set, self.train_color_set, self.train_scale_set)] 
-        self.base_transforms_test =  self.base_transforms_test + [AddRandomTransformationDims(self.test_angle_set, self.test_color_set, self.test_scale_set)]
+        self.base_transforms_train = self.base_transforms_train + [AddRandomTransformationDims(self.train_angle_set, self.train_color_set, self.train_scale_set, transform_idx = self.transform_idx)] 
+        self.base_transforms_test =  self.base_transforms_test + [AddRandomTransformationDims(self.test_angle_set, self.test_color_set, self.test_scale_set,  transform_idx = self.transform_idx)]
 
         self.transforms_train = transforms.Compose(self.base_transforms_train)
         self.target_transform_train = DuplicateTargets(self.n_transforms_train)
