@@ -187,7 +187,7 @@ class LVAE_IAF(VAE):
 
             else:
                 vi_index = np.random.randint(self.n_obs)
-            
+        
             encoder_output = self.encoder(x[:, vi_index])#, vi_index * torch.ones(x.shape[0], 1).to(x.device) / self.n_obs)
             mu, log_var = encoder_output.embedding, encoder_output.log_covariance
             h = None#encoder_output.context
@@ -431,8 +431,9 @@ class LVAE_IAF(VAE):
 
         # starting gaussian log-density
         log_prob_z_vi_index = (
-            -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / torch.exp(log_var))
+            -0.5 * (log_var + torch.pow(z_0_vi_index - mu, 2) / (torch.exp(log_var) + 1e-7))
         ).sum(dim=1) - log_abs_det_jac_posterior
+
 
         log_p_z = self._log_p_z(z0) 
 
@@ -1194,7 +1195,7 @@ class LLDM_IAF(VAE):
         
         if self.model_config.reconstruction_loss == "mse":
             recon_loss = (
-                0.5 * (
+                (
                     F.mse_loss(
                         recon_x.reshape(x.shape[0]*self.n_obs, -1),
                         x.reshape(x.shape[0]*self.n_obs, -1),
@@ -1226,19 +1227,18 @@ class LLDM_IAF(VAE):
 
         # prior log-density
 
-        # if vi_index == 0 or vi_index == self.n_obs - 1:
-        #     log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
-        #     log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
-        #     KLD = log_prob_z_vi_index - log_prior_z_vi_index 
-        #     KLD = torch.clamp(KLD, min = -2, max = 500)
-        # else:
-        #     KLD = torch.zeros_like(log_prob_z_vi_index)
+        if vi_index == 0 or vi_index == self.n_obs - 1:
+            log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
+            log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
+            KLD = log_prob_z_vi_index - log_prior_z_vi_index 
+            KLD = torch.clamp(KLD, min = -2, max = 500)
+        else:
+            KLD = torch.zeros_like(log_prob_z_vi_index)
 
-        #if vi_index == 0 or vi_index == self.n_obs - 1:
                 
-        log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
-        log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
-        KLD = log_prob_z_vi_index - log_prior_z_vi_index
+        # log_prior_z_vi_index = self.log_p_j_hat(j= vi_index, z = z_vi_index)
+        # log_prior_z_vi_index = log_prior_z_vi_index.to(z_vi_index.device)
+        # KLD = log_prob_z_vi_index - log_prior_z_vi_index
         # #########
         # KLD = - KLD #negative KL divergence
         # ###########

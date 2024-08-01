@@ -57,7 +57,7 @@ class Preprocessor:
 
         if transform == 'rotation':
             self.transform_idx = 0
-        elif transform =='color':
+        elif transform == 'color':
             self.transform_idx = 2
         elif transform == 'scale':
             self.transform_idx = 1

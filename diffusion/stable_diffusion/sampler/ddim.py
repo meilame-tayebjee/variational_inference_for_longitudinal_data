@@ -68,7 +68,7 @@ class DDIMSampler(DiffusionSampler):
         # Calculate $\tau$ to be uniformly distributed across $[1,2,\dots,T]$
         if ddim_discretize == 'uniform':
             c = self.n_steps // n_steps
-            self.time_steps = np.asarray(list(range(0, self.n_steps, c))) + 1
+            self.time_steps = np.asarray(list(range(0, self.n_steps, c)))
         # Calculate $\tau$ to be quadratically distributed across $[1,2,\dots,T]$
         elif ddim_discretize == 'quad':
             self.time_steps = ((np.linspace(0, np.sqrt(self.n_steps * .8), n_steps)) ** 2).astype(int) + 1

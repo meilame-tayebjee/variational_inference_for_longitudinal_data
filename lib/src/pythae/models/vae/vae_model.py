@@ -44,7 +44,8 @@ class VAE(BaseAE):
         #decoder: Optional[BaseDecoder] = None,
         decoder: Optional = None,
         prior_var: Optional[int] = 1,
-        prior_mean= None
+        prior_mean= None,
+        beta = 1
     ):
 
         BaseAE.__init__(self, model_config=model_config, decoder=decoder)
@@ -74,6 +75,8 @@ class VAE(BaseAE):
             self.prior_mean = torch.zeros(self.latent_dim).to(self.device)
         else:
             self.prior_mean = prior_mean
+        
+        self.beta = beta
 
     def forward(self, inputs: BaseDataset, **kwargs):
         """
@@ -145,7 +148,7 @@ class VAE(BaseAE):
         diff = mu - self.prior_mean.to(mu.device)
         KLD = -0.5 * torch.sum(1 - torch.log(torch.tensor(self.prior_var).to(mu.device)) + log_var - ((diff.pow(2)  + log_var.exp()) / self.prior_var), dim=-1)
 
-        return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
+        return (recon_loss + self.beta * KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 
     def _sample_gauss(self, mu, std):
         # Reparametrization trick
