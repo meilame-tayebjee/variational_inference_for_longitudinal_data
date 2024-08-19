@@ -491,23 +491,215 @@ class LVAE_IAF(VAE):
         return log_p_z
 
 
-    def generate(self, z):
-        z_for = z
+    def reconstruct(self, x, vi_index, z_vi_index = None, device = 'cuda'):
+        x = x["data"].to(device)
+        x = x.unsqueeze(0) if len(x.shape) == 4 else x
+        batch_size = x.shape[0]
 
-        #_rec = self.decoder(z).reconstruction
-        #h = self.encoder(_rec).context
+        encoder_output = self.encoder(x[:, vi_index])
+        mu, log_var = encoder_output.embedding, encoder_output.log_covariance
 
-        z_seq = [z]
-        for i in range(self.n_obs - 1):
+
+        std = torch.exp(0.5 * log_var)
+        #std = torch.zeros_like(log_var)
+        z, _ = self._sample_gauss(mu, std)
+
+        log_abs_det_jac_posterior = 0
+        if self.posterior == 'iaf':
+
+            if self.posterior_iaf_config.context_dim is not None:
+                try:
+                    h = encoder_output.context
+
+                except AttributeError as e:
+                    raise AttributeError(
+                        "Cannot get context from encoder outputs. If you set `context_dim` argument to "
+                        "something different from None please ensure that the encoder actually outputs "
+                        f"the context vector 'h'. Exception caught: {e}."
+                    )
+
+                # Pass it through the Normalizing flows
+                flow_output = self.posterior_iaf_flow.inverse(z, h=h)  # sampling
+
+            else:
+                # Pass it through the Normalizing flows
+                flow_output = self.posterior_iaf_flow.inverse(z)  # sampling
+
+            z = flow_output.out
+            log_abs_det_jac_posterior += flow_output.log_abs_det_jac
+
+        z_vi_index = z if z_vi_index is None else z_vi_index
+
+
+        ## propagate in past
+        z_seq = []
+        z_rev = z_vi_index
+        log_abs_det_jac = 0
+        for i in range(vi_index - 1, -1, -1):
+            #print("past", i)
+            flow_output = self.flows[i](z_rev)
+            z_rev = flow_output.out
+            log_abs_det_jac += flow_output.log_abs_det_jac
+            z_seq.append(z_rev)
+##
+        z_seq.reverse()
+#
+        z_seq.append(z_vi_index)
+
+        #proapagate in future
+        z_for = z_vi_index
+        for i in range(vi_index, self.n_obs - 1):
+            #print("future", i)
             flow_output = self.flows[i].inverse(z_for)
             z_for = flow_output.out
             z_seq.append(z_for)
 
-        z_seq = torch.cat(z_seq, dim=-1)
+        z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
+        recon_x = self.decoder(z_seq)["reconstruction"]
+
+        return z_seq, recon_x
+
+
+
+
+    def generate(self, train_data, random_normal = False, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, batch_size = 128, freeze = False, device = 'cuda', verbose = True):
+        
+        if not random_normal:
+            self = self.to(device)
+            model_config = VAEConfig(input_dim=self.input_dim, latent_dim= self.latent_dim, uses_default_encoder= False, uses_default_decoder= False, reconstruction_loss= 'mse')
+            final_vae = VAE(model_config = model_config, encoder = self.encoder, decoder = self.decoder)
+            obs_data = train_data[:, vi_index]
+            _, mu, log_var = final_vae.retrieveG(obs_data, verbose = verbose, T_multiplier=T_multiplier, device = device, addStdNorm=False)
+
+            batch_size = num_gen_seq if num_gen_seq <= batch_size else batch_size
+            all_z_vi = []
+
+            final_vae = final_vae.to(device)
+            mu = mu.to(device)
+
+            if verbose:
+                if freeze:
+                    print(f'Freezing the {vi_index}th/rd obs...')
+                    print(f'Sampling 1 point on the {vi_index}th/rd manifold...')
+                
+                else:
+                    print(f'Sampling {num_gen_seq} points on the {vi_index}th/rd manifold...')
+        
+            if not freeze:
+                for j in range(0, num_gen_seq // batch_size):
+                    z, p = hmc_sampling(final_vae, mu, n_samples=batch_size, mcmc_steps_nbr=100)
+                    all_z_vi.append(z)
+                
+                if num_gen_seq % batch_size != 0:
+                    z,p = hmc_sampling(final_vae, mu, n_samples=num_gen_seq % batch_size, mcmc_steps_nbr=100)
+                    all_z_vi.append(z)
+
+            else:
+                z,p = hmc_sampling(final_vae, mu, n_samples=1, mcmc_steps_nbr=100)
+                all_z_vi = [z]*num_gen_seq
+            
+            all_z_vi = torch.cat(all_z_vi, dim=0)
+        
+        else:
+            assert vi_index == 0, 'Random normal sampling only works for the first observation (vi_index needs to be 0)'
+            all_z_vi = torch.randn(num_gen_seq, self.latent_dim).to(device)
+        
+        
+        full_recon_x, full_z_seq = [], []
+        for j in range(0, num_gen_seq // batch_size):
+            z_vi_index = all_z_vi[j:j+batch_size]
+
+            ## propagate in past
+            z_seq = []
+            z_rev = z_vi_index
+            log_abs_det_jac = 0
+            for i in range(vi_index - 1, -1, -1):
+                #print("past", i)
+                flow_output = self.flows[i](z_rev)
+                z_rev = flow_output.out
+                log_abs_det_jac += flow_output.log_abs_det_jac
+                z_seq.append(z_rev)
+    ##
+            z_seq.reverse()
+    #
+            z_seq.append(z_vi_index)
+
+            #proapagate in future
+            z_for = z_vi_index
+            for i in range(vi_index, self.n_obs - 1):
+                #print("future", i)
+                flow_output = self.flows[i].inverse(z_for)
+                z_for = flow_output.out
+                z_seq.append(z_for)
+
+            z_seq = torch.cat(z_seq, dim=-1)
+
+            #t = torch.linspace(0, 1, self.n_obs).repeat(x.shape[0], 1).to(z.device)
+            #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(x.shape[0], -1, self.latent_dim)), dim=-1)
+
+            recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+
+            z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
+            full_recon_x.append(recon_x.detach().cpu())
+            full_z_seq.append(z_seq.detach().cpu())
+        
+        if num_gen_seq % batch_size != 0:
+            if verbose:
+                print(f'Remainder batch size...: size', num_gen_seq % batch_size)
+            rem = num_gen_seq % batch_size
+            z_vi_index = all_z_vi[-rem:]
+
+            z_seq = []
+            z_rev = z_vi_index
+            log_abs_det_jac = 0
+            for i in range(vi_index - 1, -1, -1):
+                #print("past", i)
+                flow_output = self.flows[i](z_rev)
+                z_rev = flow_output.out
+                log_abs_det_jac += flow_output.log_abs_det_jac
+                z_seq.append(z_rev)
+    ##
+            z_seq.reverse()
+    #
+            z_seq.append(z_vi_index)
+
+            #proapagate in future
+            z_for = z_vi_index
+            for i in range(vi_index, self.n_obs - 1):
+                #print("future", i)
+                flow_output = self.flows[i].inverse(z_for)
+                z_for = flow_output.out
+                z_seq.append(z_for)
+
+            z_seq = torch.cat(z_seq, dim=-1)
+
+            recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+
+            z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
+            full_recon_x.append(recon_x.detach().cpu())
+            full_z_seq.append(z_seq.detach().cpu())
+        
+
+        full_recon_x = torch.cat(full_recon_x, dim=0)
+        full_z_seq = torch.cat(full_z_seq, dim=0)
+
+        
+        # z_for = z
+
+        # #_rec = self.decoder(z).reconstruction
+        # #h = self.encoder(_rec).context
+
+        # z_seq = [z]
+        # for i in range(self.n_obs - 1):
+        #     flow_output = self.flows[i].inverse(z_for)
+        #     z_for = flow_output.out
+        #     z_seq.append(z_for)
+
+        # z_seq = torch.cat(z_seq, dim=-1)
 
         #t = torch.linspace(0, 1, self.n_obs).repeat(z.shape[0], 1).to(z.device)
         #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(z.shape[0], -1, self.latent_dim)), dim=-1)
-        return self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim), z_seq #, torch.arange(0, self.n_obs).to(z.device).repeat(z.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"].reshape((z.shape[0], self.n_obs,) + self.input_dim)
+        return full_recon_x, full_z_seq
 
     def infer_missing(self, x, seq_mask, pix_mask):
         # iterate on seen images in sequence and keep the one maximizing p(x_i^obs|z)
@@ -1418,7 +1610,7 @@ class LLDM_IAF(VAE):
 
 
 
-    def generate(self, train_data, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, freeze = False, device = 'cuda', verbose = True):
+    def generate(self, train_data, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, batch_size = 128, freeze = False, device = 'cuda', verbose = True):
         
         self = self.to(device)
         model_config = VAEConfig(input_dim=self.input_dim, latent_dim= self.latent_dim, uses_default_encoder= False, uses_default_decoder= False, reconstruction_loss= 'mse')
@@ -1426,7 +1618,7 @@ class LLDM_IAF(VAE):
         obs_data = train_data[:, vi_index]
         _, mu, log_var = final_vae.retrieveG(obs_data, verbose = verbose, T_multiplier=T_multiplier, device = device, addStdNorm=False)
 
-        batch_size = num_gen_seq if num_gen_seq <= 256 else 256
+        batch_size = num_gen_seq if num_gen_seq <= batch_size else batch_size
         all_z_vi = []
 
         final_vae = final_vae.to(device)
@@ -1441,6 +1633,8 @@ class LLDM_IAF(VAE):
                 print(f'Sampling {num_gen_seq} points on the {vi_index}th/rd manifold...')
 
         if not freeze:
+
+            #the for loop and the if condition enables at the end to have a list of z_vi_index of size num_gen_seq
             for j in range(0, num_gen_seq // batch_size):
                 z, p = hmc_sampling(final_vae, mu, n_samples=batch_size, mcmc_steps_nbr=100)
                 all_z_vi.append(z)
@@ -1449,15 +1643,18 @@ class LLDM_IAF(VAE):
                 z,p = hmc_sampling(final_vae, mu, n_samples=num_gen_seq % batch_size, mcmc_steps_nbr=100)
                 all_z_vi.append(z)
 
-            #all_z_vi = torch.cat(all_z_vi, dim=0).cpu().detach() #shape (num_gen_seq, latent_dim)
         else:
             z,p = hmc_sampling(final_vae, mu, n_samples=1, mcmc_steps_nbr=100)
-            all_z_vi = [z]*num_gen_seq
-            #all_z_vi = torch.cat([z]*num_gen_seq, dim=0).cpu().detach()
+            all_z_vi = [z]*num_gen_seq #all_z_vi is size (num_gen_seq, latent_dim). As we freeze the vi_indes^th observation, we copy
+
 
         full_recon_x, full_z_seq = [], []
-        for j in range(len(all_z_vi)):
-            z_vi_index = all_z_vi[j]
+        for j in range(0, num_gen_seq // batch_size):
+            if verbose:
+                print(f'Batch {j+1}/{num_gen_seq // batch_size}')
+            z_vi_index = torch.cat(all_z_vi[j*batch_size: (j+1)*batch_size], dim=0) if freeze else all_z_vi[j]
+            z_seq = []
+            z_rev = z_vi_index
             ## propagate in past - Forward Diffusion (Noising)
             z_seq = []
             z_rev = z_vi_index
@@ -1465,7 +1662,6 @@ class LLDM_IAF(VAE):
                 print('Propagating in the past...')
 
             for i in range(vi_index - 1, -1, -1): #noising in a sequential way
-
                 #To keep the forward pass parallelisable, we repeat the same sampled vi_index
                 t1 = self.diff_t_steps[(i+1)*np.ones(z_rev.shape[0]).astype(int)]
                 t2 =  self.diff_t_steps[i*np.ones(z_rev.shape[0]).astype(int)]
@@ -1494,7 +1690,60 @@ class LLDM_IAF(VAE):
                 z_for = z_for.reshape(-1, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
                 z_seq.append(z_for)
 
-            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (batch_size * n_obs, latent_dim)
+            if verbose:
+                print('Decoding...')
+
+            recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            
+            z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
+            full_recon_x.append(recon_x.detach().cpu())
+            full_z_seq.append(z_seq.detach().cpu())
+        
+        if num_gen_seq % batch_size != 0:
+            if verbose:
+                print(f'Remainder batch size...: size', num_gen_seq % batch_size)
+
+            rem = num_gen_seq % batch_size
+            z_vi_index = torch.cat(all_z_vi[-rem:], dim=0) if freeze else all_z_vi[-1]
+            ## propagate in past - Forward Diffusion (Noising)
+            z_seq = []
+            z_rev = z_vi_index
+            if verbose and vi_index > 0:
+                print('Propagating in the past...')
+
+            for i in range(vi_index - 1, -1, -1): #noising in a sequential way
+                #To keep the forward pass parallelisable, we repeat the same sampled vi_index
+                t1 = self.diff_t_steps[(i+1)*np.ones(z_rev.shape[0]).astype(int)]
+                t2 =  self.diff_t_steps[i*np.ones(z_rev.shape[0]).astype(int)]
+                z_rev = self.pretrained_ldm.sequential_diffusion(x= z_rev, t1 = t1, t2 = t2).to(self.pretrained_ldm.device).float()
+
+                z_seq.append(z_rev)
+        ##
+            z_seq.reverse()
+        #
+            z_seq.append(z_vi_index.to(self.pretrained_ldm.device))
+
+
+
+            #propagate in future - Backward Diffusion (Denoising)
+            z_for = z_vi_index
+            if verbose and vi_index < self.n_obs - 1:
+                print('Propagating in the future...')
+            for i in range(vi_index, self.n_obs - 1):
+                t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float() #diffusion time-step
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
+                z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                    index = self.n_obs -1- i,
+                                                                    x = z_for,
+                                                                    temperature=self.temperature,
+                                                                    repeat_noise=False)
+                
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                z_seq.append(z_for)
+
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (batch_size * n_obs, latent_dim)
 
             if verbose:
                 print('Decoding...')
@@ -1508,6 +1757,86 @@ class LLDM_IAF(VAE):
         full_z_seq = torch.cat(full_z_seq, dim=0)
 
         return full_recon_x, full_z_seq
+
+    def predict(self, x, vi_index, num_gen_seq = 1, batch_size = 100, device = 'cuda'):
+        """
+        Predict the latent variables and the reconstruction of the data at the vi_index-th time step
+
+        Args:
+            data (torch.Tensor): The input data from which the latent variables and the reconstruction should be predicted.
+                Data must be of shape [Batch x n_channels x ...]
+            vi_index (int): The index of the variable of interest
+            device (str): The device on which the data should be loaded
+
+        Returns:
+            torch.Tensor: The predicted latent variables
+            torch.Tensor: The predicted reconstruction
+        """
+
+        self = self.to(device)
+        batch_size = num_gen_seq if num_gen_seq <= batch_size else batch_size
+
+
+        x = x.unsqueeze(0) if len(x.shape) == 4 else x
+        n_seq = x.shape[0]
+        x_vi_index = x[:, vi_index].to(device)
+        z_vi_index = self.encoder(x_vi_index.unsqueeze(0)).embedding
+        z_vi_index = torch.cat(num_gen_seq*[z_vi_index], dim=1).reshape(n_seq, num_gen_seq, self.latent_dim) # (n_seq, num_gen_seq, latent_dim), with repetition on the axis 1 of the same z_vi_index (for each sequence)
+
+        #Predict future with backward diffusion
+        all_pred_x = []
+
+        for j in range(0, num_gen_seq // batch_size):
+            z_seq = []
+            z_for = z_vi_index[:, j*batch_size: (j+1)*batch_size] # (n_seq, batch_size, latent_dim)
+            for i in range(vi_index, self.n_obs - 1):
+                t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float() #diffusion time-step
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
+                z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                    index = self.n_obs -1- i,
+                                                                    x = z_for,
+                                                                    temperature=self.temperature,
+                                                                    repeat_noise=False)
+                
+                z_for = z_for.reshape(-1, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                z_seq.append(z_for) 
+            #At the end of the loop, z_seq contains the latent of vi_index + 1 to T
+
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (n_seq * batch_size * n_obs - vi_index, latent_dim)
+            
+            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            all_pred_x.append(pred_x)
+
+        if num_gen_seq % batch_size != 0:
+            rem = num_gen_seq % batch_size
+            z_seq = []
+            z_for = z_vi_index[:, -rem:]
+            for i in range(vi_index, self.n_obs - 1):
+                t = torch.tensor(self.diff_t_steps[i]).reshape(1).to(self.pretrained_ldm.device).float() #diffusion time-step
+                z_for = z_for.reshape(n_seq, self.pretrained_ldm.c, self.pretrained_ldm.h, self.pretrained_ldm.w).float().to(self.pretrained_ldm.device)
+                noise_pred = self.pretrained_ldm(z_for, t) # \eps_\theta (z_t, t)
+                z_for, _ = self.ddim_sampler.get_x_prev_and_pred_x0(e_t = noise_pred,
+                                                                    index = self.n_obs -1- i,
+                                                                    x = z_for,
+                                                                    temperature=self.temperature,
+                                                                    repeat_noise=False)
+                
+                z_for = z_for.reshape(n_seq, self.pretrained_ldm.c * self.pretrained_ldm.h * self.pretrained_ldm.w).to(self.pretrained_ldm.device)
+                z_seq.append(z_for) 
+            #At the end of the loop, z_seq contains the latent of vi_index + 1 to T
+
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (n_seq * batch_size * n_obs - vi_index, latent_dim)
+            
+            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            all_pred_x.append(pred_x)
+
+        all_pred_x = torch.cat(all_pred_x, dim=1).to(device) # (n_seq, num_gen_seq, n_obs - vi_index, input_dim)
+        #prev_x = torch.repeat_interleave(x[:, :vi_index+1], num_gen_seq, dim=1).reshape((n_seq, num_gen_seq, vi_index + 1) + self.input_dim).to(device) # (n_seq, num_gen_seq, vi_index + 1, input_dim)
+
+        return all_pred_x
+
+
 
 
     def get_nll(self, data, vi_index, n_samples=1, batch_size=100):
@@ -1668,3 +1997,4 @@ class LLDM_IAF(VAE):
         # Sample N(0, I)
         eps = torch.randn_like(std)
         return mu + eps * std, eps
+
