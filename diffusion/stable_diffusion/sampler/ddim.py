@@ -52,7 +52,7 @@ class DDIMSampler(DiffusionSampler):
 
     model: LatentDiffusion
 
-    def __init__(self, model: LatentDiffusion, n_steps: int, ddim_discretize: str = "uniform", ddim_eta: float = 0.):
+    def __init__(self, model: LatentDiffusion, n_steps: int = None, time_steps = None, ddim_discretize: str = "uniform", ddim_eta: float = 0.):
         r"""
         :param model: is the model to predict noise $\epsilon_\text{cond}(x_t, c)$
         :param n_steps: is the number of DDIM sampling steps, $S$
@@ -63,19 +63,25 @@ class DDIMSampler(DiffusionSampler):
         """
         super().__init__(model)
         # Number of steps, $T$
-        self.n_steps = model.n_steps
 
-        # Calculate $\tau$ to be uniformly distributed across $[1,2,\dots,T]$
-        if ddim_discretize == 'uniform':
-            c = self.n_steps // n_steps
-            self.time_steps = np.asarray(list(range(0, self.n_steps, c))) + 1
-            if self.time_steps[-1] == self.n_steps:
-                self.time_steps[-1] -= 1
-        # Calculate $\tau$ to be quadratically distributed across $[1,2,\dots,T]$
-        elif ddim_discretize == 'quad':
-            self.time_steps = ((np.linspace(0, np.sqrt(self.n_steps * .8), n_steps)) ** 2).astype(int) + 1
-        else:
-            raise NotImplementedError(ddim_discretize)
+        if time_steps is None:
+            self.n_steps = model.n_steps
+
+            # Calculate $\tau$ to be uniformly distributed across $[1,2,\dots,T]$
+            if ddim_discretize == 'uniform':
+                c = self.n_steps // n_steps
+                self.time_steps = np.asarray(list(range(0, self.n_steps, c))) + 1
+                if self.time_steps[-1] == self.n_steps:
+                    self.time_steps[-1] -= 1
+            # Calculate $\tau$ to be quadratically distributed across $[1,2,\dots,T]$
+            elif ddim_discretize == 'quad':
+                self.time_steps = ((np.linspace(0, np.sqrt(self.n_steps * .8), n_steps)) ** 2).astype(int) + 1
+            else:
+                raise NotImplementedError(ddim_discretize)
+
+        if time_steps is not None:
+            self.time_steps = time_steps
+            self.n_steps = len(time_steps)
 
         with torch.no_grad():
             # Get ${\color{lightgreen}\bar\alpha_t}$
