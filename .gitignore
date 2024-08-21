@@ -24,3 +24,5 @@ wandb/
 _old/
 riemannian_random_walk/trained_models/
 riemannian_random_walk/training_data/
+ODE2VAE-master/
+Vid-ODE-main/
