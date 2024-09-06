@@ -214,10 +214,10 @@ class DDIMSampler(DiffusionSampler):
 
         # Current prediction for $x_0$,
         # $$\frac{x_{\tau_i} - \sqrt{1 - \alpha_{\tau_i}}\epsilon_\theta(x_{\tau_i})}{\sqrt{\alpha_{\tau_i}}}$$
-        pred_x0 = (x - sqrt_one_minus_alpha * e_t) / (alpha ** 0.5)
+        pred_x0 = (x - sqrt_one_minus_alpha.to(x.device) * e_t) / (alpha.to(x.device) ** 0.5)
         # Direction pointing to $x_t$
         # $$\sqrt{1 - \alpha_{\tau_{i- 1}} - \sigma_{\tau_i}^2} \cdot \epsilon_\theta(x_{\tau_i})$$
-        dir_xt = (1. - alpha_prev - sigma ** 2).sqrt() * e_t
+        dir_xt = (1. - alpha_prev.to(e_t.device) - sigma.to(e_t.device) ** 2).sqrt() * e_t
         # No noise is added, when $\eta = 0$
         if sigma == 0.:
             noise = 0.
@@ -238,7 +238,7 @@ class DDIMSampler(DiffusionSampler):
         #             &+ \sqrt{1 - \alpha_{\tau_{i- 1}} - \sigma_{\tau_i}^2} \cdot \epsilon_\theta(x_{\tau_i}) \\
         #             &+ \sigma_{\tau_i} \epsilon_{\tau_i}
         #  \end{align}
-        x_prev = (alpha_prev ** 0.5) * pred_x0 + dir_xt + sigma * noise
+        x_prev = (alpha_prev.to(dir_xt.device) ** 0.5) * pred_x0.to(dir_xt.device) + dir_xt + sigma.to(dir_xt.device) * noise.to(dir_xt.device)
 
         #
         return x_prev, pred_x0

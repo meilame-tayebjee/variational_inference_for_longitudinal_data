@@ -492,9 +492,11 @@ class LVAE_IAF(VAE):
 
 
     def reconstruct(self, x, vi_index, z_vi_index = None, device = 'cuda'):
+        self = self.to(device)
         x = x["data"].to(device)
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
         batch_size = x.shape[0]
+
 
         encoder_output = self.encoder(x[:, vi_index])
         mu, log_var = encoder_output.embedding, encoder_output.log_covariance
@@ -562,9 +564,10 @@ class LVAE_IAF(VAE):
 
 
 
-    def generate(self, train_data, random_normal = False, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, batch_size = 128, freeze = False, device = 'cuda', verbose = True):
+    def generate(self, train_data = None, random_normal = False, num_gen_seq = 1, vi_index = 0, T_multiplier = 0.5, batch_size = 128, freeze = False, device = 'cuda', verbose = True):
         
         if not random_normal:
+            assert train_data is not None, 'train_data must be provided if random_normal is False'
             self = self.to(device)
             model_config = VAEConfig(input_dim=self.input_dim, latent_dim= self.latent_dim, uses_default_encoder= False, uses_default_decoder= False, reconstruction_loss= 'mse')
             final_vae = VAE(model_config = model_config, encoder = self.encoder, decoder = self.decoder)
@@ -700,6 +703,58 @@ class LVAE_IAF(VAE):
         #t = torch.linspace(0, 1, self.n_obs).repeat(z.shape[0], 1).to(z.device)
         #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(z.shape[0], -1, self.latent_dim)), dim=-1)
         return full_recon_x, full_z_seq
+    
+
+    def predict(self, x, vi_index, num_gen_seq = 1, batch_size = 100, device = 'cuda'):
+
+        self = self.to(device)
+        batch_size = num_gen_seq if num_gen_seq <= batch_size else batch_size
+
+
+        x = x.unsqueeze(0) if len(x.shape) == 4 else x
+        n_seq = x.shape[0]
+        x_vi_index = x[:, vi_index].to(device)
+        z_vi_index = self.encoder(x_vi_index.unsqueeze(0)).embedding
+        z_vi_index = torch.cat(num_gen_seq*[z_vi_index], dim=1).reshape(n_seq, num_gen_seq, self.latent_dim) # (n_seq, num_gen_seq, latent_dim), with repetition on the axis 1 of the same z_vi_index (for each sequence)
+
+        #Predict future with backward diffusion
+        all_pred_x = []
+        
+        for j in range(0, num_gen_seq // batch_size):
+            z_seq = []
+            z_for = z_vi_index[:, j*batch_size: (j+1)*batch_size] # (n_seq, batch_size, latent_dim)
+            for i in range(vi_index, self.n_obs - 1):
+                #print("future", i)
+                flow_output = self.flows[i].inverse(z_for)
+                z_for = flow_output.out
+                z_seq.append(z_for)
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
+
+            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            all_pred_x.append(pred_x)
+
+        
+        if num_gen_seq % batch_size != 0:
+            rem = num_gen_seq % batch_size
+            z_seq = []
+            z_for = z_vi_index[:, -rem:]
+            for i in range(vi_index, self.n_obs - 1):
+                #print("future", i)
+                flow_output = self.flows[i].inverse(z_for)
+                z_for = flow_output.out
+                z_seq.append(z_for)
+            #At the end of the loop, z_seq contains the latent of vi_index + 1 to T
+
+            z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (n_seq * batch_size * n_obs - vi_index, latent_dim)
+            
+            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            all_pred_x.append(pred_x)
+
+        all_pred_x = torch.cat(all_pred_x, dim=1).to(device) # (n_seq, num_gen_seq, n_obs - vi_index, input_dim)
+        #prev_x = torch.repeat_interleave(x[:, :vi_index+1], num_gen_seq, dim=1).reshape((n_seq, num_gen_seq, vi_index + 1) + self.input_dim).to(device) # (n_seq, num_gen_seq, vi_index + 1, input_dim)
+
+        return all_pred_x
+
 
     def infer_missing(self, x, seq_mask, pix_mask):
         # iterate on seen images in sequence and keep the one maximizing p(x_i^obs|z)
@@ -1058,8 +1113,6 @@ class LLDM_IAF(VAE):
 
     def forward(self, inputs: BaseDataset, vi_index = None, **kwargs):
         """
-        The VAE NF model
-
         Args:
             inputs (BaseDataset): The training dataset with labels
 
@@ -1071,8 +1124,11 @@ class LLDM_IAF(VAE):
 
         x = inputs['data'].to(device)
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
+        epoch = kwargs.pop("epoch", 100)
 
         if hasattr(inputs, 'seq_mask'):
+            if epoch == 1:
+                print('seq_mask provided')
             seq_mask = inputs['seq_mask'].to(device)
         else:
             seq_mask = torch.ones(x.shape[0], self.n_obs).to(device)
@@ -1082,7 +1138,6 @@ class LLDM_IAF(VAE):
         else:
             pix_mask = torch.ones_like(x)
 
-        epoch = kwargs.pop("epoch", 100)
         x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         batch_size = x.shape[0]
 
@@ -1602,9 +1657,9 @@ class LLDM_IAF(VAE):
             z_seq.append(z_for)
 
         z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
-        recon_x = self.decoder(z_seq)["reconstruction"]
+        recon_x = self.decoder(z_seq)["reconstruction"].cpu().detach()
 
-        return z_seq, recon_x
+        return z_seq.cpu().detach(), recon_x
 
     def oversample(self, x, vi_index = 0, z_vi_index = None, sampler = None, num_supp_steps = None, verbose = False):
 

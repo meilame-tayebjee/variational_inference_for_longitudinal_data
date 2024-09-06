@@ -91,8 +91,17 @@ class VAE(BaseAE):
         """
 
         x = inputs["data"]
-        seq_mask = inputs['seq_mask']
-        pix_mask = inputs['pix_mask']
+
+        if hasattr(inputs, "seq_mask"):
+            seq_mask = inputs['seq_mask']
+        else:
+            seq_mask = torch.ones(x.shape[0], x.shape[1]).to(x.device)
+        
+        if hasattr(inputs, "pix_mask"):
+            pix_mask = inputs['pix_mask']
+        else:
+            pix_mask = torch.ones_like(x)
+            
         epoch = kwargs.pop("epoch", 100)
         #x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
@@ -126,6 +135,7 @@ class VAE(BaseAE):
 
     def loss_function(self, recon_x, x, mu, log_var, z, seq_mask=None, pix_mask=None):
 
+
         if self.model_config.reconstruction_loss == "mse":
             recon_loss = 0.5 * (
                 F.mse_loss(
@@ -147,7 +157,6 @@ class VAE(BaseAE):
 
         diff = mu - self.prior_mean.to(mu.device)
         KLD = -0.5 * torch.sum(1 - torch.log(torch.tensor(self.prior_var).to(mu.device)) + log_var - ((diff.pow(2)  + log_var.exp()) / self.prior_var), dim=-1)
-
         return (recon_loss + self.beta * KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 
     def _sample_gauss(self, mu, std):
