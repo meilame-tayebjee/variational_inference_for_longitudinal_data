@@ -590,3 +590,87 @@ class Decoder_Faces(BaseDecoder):
         output["reconstruction"] = out.reshape((z.shape[0],) + self.input_dim)
 
         return output
+    
+
+class Encoder_ADNI(BaseEncoder):
+    def __init__(self, input_dim, latent_dim):
+        BaseEncoder.__init__(self)
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        self.fc = nn.Sequential(
+            nn.Linear(np.prod(input_dim), 60),
+            nn.ReLU(),
+            nn.Linear(60, 30),
+            nn.ReLU(),
+            nn.Linear(30, 15),
+            nn.ReLU(),
+        )
+
+        self.embedding = nn.Linear(15, self.latent_dim)
+        self.log_var = nn.Linear(15, self.latent_dim)
+
+    def forward(self, x):
+        output = ModelOutput()
+        out = self.fc(x.reshape(-1, np.prod(self.input_dim)))
+
+        output["embedding"] = self.embedding(out)
+        output["log_covariance"] = self.log_var(out)
+
+        return output
+    
+class Encoder_ADNI_GPVAE(BaseEncoder):
+    def __init__(self, input_dim, latent_dim):
+        BaseEncoder.__init__(self)
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        self.fc = nn.Sequential(
+            nn.Linear(np.prod(input_dim), 60),
+            nn.ReLU(),
+            nn.Linear(60, 30),
+            nn.ReLU(),
+            nn.Linear(30, 15),
+            nn.ReLU(),
+        )
+
+        self.embedding = nn.Linear(15, self.latent_dim)
+        self.log_var = nn.Linear(15, 2*self.latent_dim)
+
+    def forward(self, x):
+        output = ModelOutput()
+        out = self.fc(x.reshape(-1, np.prod(self.input_dim)))
+
+        output["embedding"] = self.embedding(out)
+        output["log_covariance"] = self.log_var(out)
+
+        return output
+    
+class Decoder_ADNI(BaseDecoder):
+    def __init__(self, input_dim, latent_dim):
+        BaseDecoder.__init__(self)
+
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+
+        self.fc = nn.Sequential(
+            nn.Linear(self.latent_dim, 15),
+            nn.ReLU(),
+            nn.Linear(15, 30),
+            nn.ReLU(),
+            nn.Linear(30, 60),
+            nn.ReLU(),
+            nn.Linear(60, np.prod(self.input_dim)),
+            nn.ReLU(),
+        )
+
+
+    def forward(self, z: torch.Tensor):
+
+        output = ModelOutput()
+
+        out = self.fc(z)
+
+        output["reconstruction"] = out.reshape((z.shape[0], np.prod(self.input_dim)))
+
+        return output

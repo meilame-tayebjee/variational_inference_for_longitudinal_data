@@ -69,14 +69,35 @@ class GPVAE(VAE):
             ModelOutput: An instance of ModelOutput containing all the relevant parameters
         """
 
-        x = inputs["data"]
-        seq_mask = inputs['seq_mask']
-        pix_mask = inputs['pix_mask']
-        x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        device = self.device
+
+        x = inputs['data'].to(device)
+
+        x = x.unsqueeze(0) if len(x.shape) == 4 else x
+        epoch = kwargs.pop("epoch", 100)
+
+        if hasattr(inputs, 'seq_mask'):
+            if epoch == 1:
+                print('seq_mask provided')
+            seq_mask = inputs['seq_mask'].to(device)
+        else:
+            seq_mask = torch.ones(x.shape[0], self.time_length).to(device)
+        
+        if hasattr(inputs, 'pix_mask'):
+            pix_mask = inputs['pix_mask'].to(device)
+        else:
+            pix_mask = torch.ones_like(x)
+
+        if len(x.shape) == 3:
+            x = torch.nan_to_num(x)
+        else:
+            x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
         pz = self._get_prior()
 
+
         encoder_output = self.encoder(x)
+
         mu, log_var = encoder_output.embedding.reshape(x.shape[0], self.time_length, -1), encoder_output.log_covariance.reshape(x.shape[0], self.time_length, -1)
 
         qz_x = self.posterior_dist(mean=mu, log_covar=log_var)
@@ -354,3 +375,27 @@ class GPVAE(VAE):
                 print(f"Current nll at {i}: {np.mean(log_p)}")
 
         return np.mean(log_p)
+    
+    def generate(self, n_samples, batch_size=32, device = 'cuda'):
+        """Generate samples from the model.
+
+        Args:
+            n_samples (int): The number of samples to generate
+            batch_size (int): The batchsize to use to avoid memory issues
+        """
+        samples = []
+        prior = self._get_prior()
+        batch_size = min(batch_size, n_samples)
+        self = self.to(device)
+        for _ in range(n_samples // batch_size):
+            z = prior.sample((batch_size,)).to(device)
+            z = torch.transpose(z, 2, 1)
+            recon_x = self.decoder(z.reshape(-1, self.latent_dim))["reconstruction"]
+            samples.append(recon_x)
+        
+        z = prior.sample((n_samples % batch_size,)).to(device)
+        z = torch.transpose(z, 2, 1)
+        recon_x = self.decoder(z.reshape(-1, self.latent_dim))["reconstruction"]
+        samples.append(recon_x)
+
+        return torch.cat(samples).reshape(n_samples, self.time_length, *self.input_dim).detach().cpu()

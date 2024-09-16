@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+import warnings
 
 import numpy as np
 import torch
@@ -306,6 +307,8 @@ class VAE(BaseAE):
 
         if verbose:
             print('Running Kmedoids')
+
+        warnings.filterwarnings("ignore", category=UserWarning)
 
         kmedoids = KMedoids(n_clusters=num_centroids).fit(mu.detach().cpu().numpy())
         medoids = torch.tensor(kmedoids.cluster_centers_).to(device)

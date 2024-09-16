@@ -28,3 +28,4 @@ riemannian_random_walk/training_data/
 ODE2VAE-master/
 Vid-ODE-main/
 Disentangled-Sequential-Autoencoder-master/
+experiments/sprites/DisentangledVAE.pth

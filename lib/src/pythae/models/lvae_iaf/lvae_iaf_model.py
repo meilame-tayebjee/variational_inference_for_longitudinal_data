@@ -117,12 +117,33 @@ class LVAE_IAF(VAE):
 
         """
 
-        x = inputs["data"]
+        device = self.device
+
+        x = inputs['data'].to(device)
+
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
-        seq_mask = inputs['seq_mask']
-        pix_mask = inputs['pix_mask']
         epoch = kwargs.pop("epoch", 100)
-        x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+
+        if hasattr(inputs, 'seq_mask'):
+            if epoch == 1:
+                print('seq_mask provided')
+            seq_mask = inputs['seq_mask'].to(device)
+        else:
+            seq_mask = torch.ones(x.shape[0], self.n_obs).to(device)
+        
+        if hasattr(inputs, 'pix_mask'):
+            pix_mask = inputs['pix_mask'].to(device)
+        else:
+            pix_mask = torch.ones_like(x)
+
+        if len(x.shape) == 3:
+            x = torch.nan_to_num(x)
+        else:
+            x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        
+        batch_size = x.shape[0]
+
 
         if epoch < self.warmup:
             encoder_output = self.encoder(x)#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)
@@ -427,6 +448,7 @@ class LVAE_IAF(VAE):
                 ).sum(dim=-1).reshape(x.shape[0], -1) * seq_mask
             ).mean(dim=-1)
 
+
         z0 = z_seq[:, 0]
 
         # starting gaussian log-density
@@ -640,8 +662,10 @@ class LVAE_IAF(VAE):
             #t = torch.linspace(0, 1, self.n_obs).repeat(x.shape[0], 1).to(z.device)
             #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(x.shape[0], -1, self.latent_dim)), dim=-1)
 
-            recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
-
+            if len(self.input_dim) == 3:
+                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            else:
+                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[1])
             z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
             full_recon_x.append(recon_x.detach().cpu())
             full_z_seq.append(z_seq.detach().cpu())
@@ -676,7 +700,10 @@ class LVAE_IAF(VAE):
 
             z_seq = torch.cat(z_seq, dim=-1)
 
-            recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            if len(self.input_dim) == 3:
+                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            else:
+                recon_x = self.decoder(z_seq.reshape(-1, self.latent_dim))["reconstruction"].reshape(-1, self.n_obs, self.input_dim[1])
 
             z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
             full_recon_x.append(recon_x.detach().cpu())
@@ -686,22 +713,6 @@ class LVAE_IAF(VAE):
         full_recon_x = torch.cat(full_recon_x, dim=0)
         full_z_seq = torch.cat(full_z_seq, dim=0)
 
-        
-        # z_for = z
-
-        # #_rec = self.decoder(z).reconstruction
-        # #h = self.encoder(_rec).context
-
-        # z_seq = [z]
-        # for i in range(self.n_obs - 1):
-        #     flow_output = self.flows[i].inverse(z_for)
-        #     z_for = flow_output.out
-        #     z_seq.append(z_for)
-
-        # z_seq = torch.cat(z_seq, dim=-1)
-
-        #t = torch.linspace(0, 1, self.n_obs).repeat(z.shape[0], 1).to(z.device)
-        #z = torch.cat((t.unsqueeze(-1), z_seq.reshape(z.shape[0], -1, self.latent_dim)), dim=-1)
         return full_recon_x, full_z_seq
     
 
@@ -730,7 +741,10 @@ class LVAE_IAF(VAE):
                 z_seq.append(z_for)
             z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim)
 
-            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            if len(self.input_dim) == 3:
+                pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            else:
+                pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[1])
             all_pred_x.append(pred_x)
 
         
@@ -1123,6 +1137,7 @@ class LLDM_IAF(VAE):
         device = self.device
 
         x = inputs['data'].to(device)
+
         x = x.unsqueeze(0) if len(x.shape) == 4 else x
         epoch = kwargs.pop("epoch", 100)
 
@@ -1138,7 +1153,11 @@ class LLDM_IAF(VAE):
         else:
             pix_mask = torch.ones_like(x)
 
-        x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        if len(x.shape) == 3:
+            x = torch.nan_to_num(x)
+        else:
+            x = x * pix_mask * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        
         batch_size = x.shape[0]
 
         if epoch < self.warmup:
@@ -1178,7 +1197,6 @@ class LLDM_IAF(VAE):
 
             #t = torch.linspace(0, 1, self.n_obs).repeat(x.shape[0], 1).to(z.device)
             #z = torch.cat((t.unsqueeze(-1), z.reshape(x.shape[0], -1, self.latent_dim)), dim=-1)
-
             recon_x = self.decoder(z_seq)["reconstruction"]#, torch.arange(0, self.n_obs).to(x.device).repeat(x.shape[0]).unsqueeze(-1) / self.n_obs)["reconstruction"] # [B*n_obs x input_dim]
 
             loss, recon_loss, kld = self.vae_loss_function(
@@ -1581,11 +1599,25 @@ class LLDM_IAF(VAE):
         # log_density = log_density.mean() #average over the batch
         # return log_density
 
-    def reconstruct(self, x, vi_index, z_vi_index = None):
+    def reconstruct(self, input, vi_index, z_vi_index = None):
 
         device = self.device
-        x = x["data"].to(device)
-        x = x.unsqueeze(0) if len(x.shape) == 4 else x
+
+        x = input["data"].to(device)
+        x = x.unsqueeze(0) if len(x.shape) == 4 or len(x.shape) == 2  else x
+
+        if hasattr(input, 'seq_mask'):
+            seq_mask = input['seq_mask'].to(device)
+        else:
+            seq_mask = torch.ones(x.shape[0], self.n_obs).to(device)
+        
+        if len(x.shape) == 3:
+            x = x * seq_mask.unsqueeze(-1)
+            x = torch.nan_to_num(x)
+        else:
+            x = x * seq_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+
         batch_size = x.shape[0]
 
         encoder_output = self.encoder(x[:, vi_index])
@@ -1845,8 +1877,11 @@ class LLDM_IAF(VAE):
             z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (batch_size * n_obs, latent_dim)
             if verbose:
                 print('Decoding...')
-
-            recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            
+            if len(self.input_dim) == 3:
+                recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            if len(self.input_dim) == 2:
+                recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[1])
             
             z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
             full_recon_x.append(recon_x.detach().cpu())
@@ -1899,7 +1934,11 @@ class LLDM_IAF(VAE):
 
             if verbose:
                 print('Decoding...')
-            recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+
+            if len(self.input_dim) == 3:
+                recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            else:
+                recon_x = self.decoder(z_seq)["reconstruction"].reshape(-1, self.n_obs, self.input_dim[1])
             
             z_seq = z_seq.reshape(-1, self.n_obs, self.latent_dim)
             full_recon_x.append(recon_x.detach().cpu())
@@ -1957,7 +1996,10 @@ class LLDM_IAF(VAE):
 
             z_seq = torch.cat(z_seq, dim=-1).reshape(-1, self.latent_dim) # (n_seq * batch_size * n_obs - vi_index, latent_dim)
             
-            pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            if len(self.input_dim) == 3:
+                pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[0], self.input_dim[1], self.input_dim[2])
+            else:
+                pred_x = self.decoder(z_seq)["reconstruction"].reshape(n_seq, batch_size, self.n_obs - vi_index - 1, self.input_dim[1])
             all_pred_x.append(pred_x)
 
         if num_gen_seq % batch_size != 0:

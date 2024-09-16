@@ -174,7 +174,6 @@ class UNetModel(nn.Module):
         for module in self.input_blocks:
             x = module(x, t_emb, cond)
             x_input_block.append(x)
-            # print(x.shape)
         # Middle of the U-Net
         # print("Entering middle block ", x.shape)
         x = self.middle_block(x, t_emb, cond)

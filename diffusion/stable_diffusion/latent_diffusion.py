@@ -203,7 +203,7 @@ class MyLatentDiffusion(nn.Module):
 
         self.latent_dim = latent_dim
         self.c = channels
-        self.h, self.w  = int((self.latent_dim // 3)**0.5), int((self.latent_dim // 3)**0.5)
+        self.h, self.w  = int((self.latent_dim // channels)**0.5), int((self.latent_dim // channels)**0.5)
 
 
 
@@ -284,7 +284,7 @@ class LitLDM(L.LightningModule):
         self.lat_dim = vae.latent_dim
 
         self.c = channels
-        self.h, self.w  = int((self.lat_dim // 3)**0.5), int((self.lat_dim // 3)**0.5)
+        self.h, self.w  = int((self.lat_dim // channels)**0.5), int((self.lat_dim // channels)**0.5)
 
         for param in self.vae.parameters():
             param.requires_grad = False
