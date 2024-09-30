@@ -15,6 +15,7 @@ Available samplers
 """
 
 from .lvae_iaf_config import LVAE_IAF_Config
-from .lvae_iaf_model import LVAE_IAF, LLDM_IAF
+from .lvae_iaf_model import LVAE_IAF
 
-__all__ = ["LVAE_IAF", "LVAE_IAF_Config", "LLDM_IAF"]
+
+__all__ = ["LVAE_IAF", "LVAE_IAF_Config"]

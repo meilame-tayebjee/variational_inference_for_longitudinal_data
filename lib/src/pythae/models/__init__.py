@@ -19,7 +19,8 @@ from .auto_model import AutoModel
 from .base import BaseAE, BaseAEConfig
 from .vae import VAE, VAEConfig
 from .vamp import VAMP, VAMPConfig
-from .lvae_iaf import LVAE_IAF, LVAE_IAF_Config, LLDM_IAF
+from .lvae_iaf import LVAE_IAF, LVAE_IAF_Config
+from .lldm import LLDM
 from .gp_vae import GPVAE, GPVAEConfig
 
 __all__ = [
@@ -36,5 +37,5 @@ __all__ = [
     "LVAE_IAF_Config",
     "GPVAE",
     "GPVAEConfig",
-    "LLDM_IAF",
+    "LLDM",
 ]
